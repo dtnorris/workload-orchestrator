@@ -12,8 +12,10 @@
 /test/version_tmp/
 /tmp/
 
-# Used by dotenv library to load environment variables.
-# .env
+# Machine-local/runtime state.
+.env
+config/workers.yml
+output/
 
 # Ignore Byebug command history file.
 .byebug_history
