@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+bundle exec ruby -c bin/wlo
+bundle exec ruby -c lib/workload_orchestrator.rb
+bundle exec ruby -c lib/workload_orchestrator/version.rb
+bundle exec rake
+bundle exec rubocop

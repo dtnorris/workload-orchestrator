@@ -1,0 +1,8 @@
+---
+workers:
+  local:
+    type: command
+    labels:
+      - local
+    hourly_rate_usd: 0.0
+    job_env: {}

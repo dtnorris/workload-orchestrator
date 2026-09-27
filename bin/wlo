@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+
+require "workload_orchestrator"
+
+case ARGV
+when ["--version"], ["-v"]
+  puts WorkloadOrchestrator::VERSION
+when ["--help"], ["-h"], []
+  puts <<~HELP
+    workload-orchestrator #{WorkloadOrchestrator::VERSION}
+
+    Usage:
+      bin/wlo --help
+      bin/wlo --version
+
+    Runtime commands are intentionally not implemented in the repository
+    bootstrap.
+  HELP
+else
+  warn "ERROR: runtime commands are not implemented yet."
+  exit 64
+end
