@@ -6,8 +6,33 @@ AllCops:
 Layout/LineLength:
   Max: 120
 
+Metrics/AbcSize:
+  Max: 30
+  Exclude:
+    - "test/**/*"
+
+Metrics/BlockLength:
+  Exclude:
+    - "test/**/*"
+
+Metrics/ClassLength:
+  Max: 400
+  Exclude:
+    - "test/**/*"
+
+Metrics/CyclomaticComplexity:
+  Max: 12
+
 Metrics/MethodLength:
-  Max: 20
+  Max: 30
+  Exclude:
+    - "test/**/*"
+
+Metrics/ParameterLists:
+  Max: 6
+
+Metrics/PerceivedComplexity:
+  Max: 12
 
 Style/Documentation:
   Enabled: false

@@ -5,12 +5,23 @@ resumable execution of declarative command workloads across configured workers.
 
 ## Status
 
-Bootstrap only.
+WLO v0.1 implements a deliberately small, zero-cost local execution kernel:
 
-This repository currently establishes the project identity, generic directory
-layout, command-line entry point, worker-configuration example, and local test
-harness. The execution-plan contract and runtime are intentionally not
-implemented yet.
+- strict JSON execution-plan validation;
+- generic pools and opaque command jobs;
+- configured workers and required labels;
+- optional exact Ollama model/digest readiness checks;
+- direct `argv` execution with layered environment overrides;
+- per-job stdout/stderr/metadata evidence;
+- sticky terminal states and resumable execution;
+- cross-process filesystem job claims;
+- graceful pause/resume;
+- failure circuit breaking;
+- immutable plan/output identity;
+- execution status reporting; and
+- a hard v0.1 gate rejecting workers with a positive hourly rate.
+
+WLO does not interpret the domain meaning of a workload or its results.
 
 ## Requirements
 
@@ -24,20 +35,102 @@ bundle install
 cp config/workers.example.yml config/workers.yml
 ```
 
-`config/workers.yml` is machine-local and ignored by Git.
+`config/workers.yml`, `.env`, and `output/` are machine-local and ignored by
+Git.
 
-## Commands
+## Quick start
+
+Validate the bundled generic example:
 
 ```bash
-bin/wlo --help
-bin/wlo --version
+bin/wlo validate examples/hello-plan.json
+```
+
+Inspect the execution plan without running it:
+
+```bash
+bin/wlo plan examples/hello-plan.json \
+  --workdir "$PWD"
+```
+
+Check worker readiness:
+
+```bash
+bin/wlo worker-check examples/hello-plan.json
+```
+
+Run it:
+
+```bash
+bin/wlo run examples/hello-plan.json \
+  --workdir "$PWD" \
+  --output output/hello-local
+```
+
+Inspect status:
+
+```bash
+bin/wlo status examples/hello-plan.json \
+  --output output/hello-local
+```
+
+A normal rerun or resume never reruns jobs already recorded as `complete` or
+`failed`.
+
+## Pause and resume
+
+Request a graceful pause:
+
+```bash
+bin/wlo pause --output output/hello-local
+```
+
+An already-running command is allowed to finish and persist. No new command is
+dispatched while the pause sentinel is present.
+
+Resume the same immutable plan:
+
+```bash
+bin/wlo resume examples/hello-plan.json \
+  --workdir "$PWD" \
+  --output output/hello-local
+```
+
+If the plan's failure policy trips its circuit breaker, ordinary resume fails
+closed. After inspecting the retained evidence, explicitly acknowledge the
+breaker to continue pending jobs:
+
+```bash
+bin/wlo resume examples/hello-plan.json \
+  --workdir "$PWD" \
+  --output output/hello-local \
+  --acknowledge-circuit-breaker
+```
+
+Failed jobs remain terminal; acknowledgement only resets the breaker counters
+for still-pending work.
+
+## Worker configuration
+
+Use `--workers-config FILE` or `WLO_WORKERS_CONFIG` to select a machine-local
+worker file. Otherwise WLO reads `config/workers.yml`.
+
+WLO v0.1 rejects any selected worker whose `hourly_rate_usd` is greater than
+zero. Paid-resource lifecycle is intentionally outside this first execution
+kernel.
+
+## Security boundary
+
+A WLO plan contains commands to execute. Treat execution plans as executable
+input and run only plans you trust. WLO invokes `argv` directly and never passes
+plan commands through an implicit shell.
+
+## Development
+
+```bash
 bundle exec rake
 script/check
 ```
 
-## Design boundary
-
-WLO is intended to execute opaque command jobs. Workload-specific systems own
-the meaning and generation of those jobs.
-
-See `docs/architecture.md`.
+See `docs/execution-plan-v0.1.md` for the frozen plan shape and
+`docs/architecture.md` for ownership boundaries.

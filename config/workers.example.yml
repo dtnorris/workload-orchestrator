@@ -6,3 +6,14 @@ workers:
       - local
     hourly_rate_usd: 0.0
     job_env: {}
+
+  # Optional Ollama-backed worker. WLO can verify an exact model digest when a
+  # pool declares requirements.ollama in its execution plan.
+  # local_ollama:
+  #   type: ollama
+  #   base_url: http://127.0.0.1:11434
+  #   labels:
+  #     - local
+  #     - ollama
+  #   hourly_rate_usd: 0.0
+  #   job_env: {}

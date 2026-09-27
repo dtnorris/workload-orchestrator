@@ -2,7 +2,6 @@
 
 require_relative "test_helper"
 require "open3"
-require "rbconfig"
 
 class BootstrapTest < Minitest::Test
   ROOT = File.expand_path("..", __dir__)
@@ -19,18 +18,12 @@ class BootstrapTest < Minitest::Test
     assert_equal "#{WorkloadOrchestrator::VERSION}\n", out
   end
 
-  def test_cli_help_is_available
+  def test_cli_help_lists_runtime_commands
     out, err, status = Open3.capture3(RbConfig.ruby, CLI, "--help")
 
     assert status.success?, err
-    assert_includes out, "Usage:"
-    assert_includes out, "bin/wlo --version"
-  end
-
-  def test_runtime_commands_are_deliberately_absent
-    _out, err, status = Open3.capture3(RbConfig.ruby, CLI, "run")
-
-    assert_equal 64, status.exitstatus
-    assert_includes err, "runtime commands are not implemented yet"
+    assert_includes out, "bin/wlo validate PLAN.json"
+    assert_includes out, "bin/wlo run PLAN.json"
+    assert_includes out, "bin/wlo resume PLAN.json"
   end
 end

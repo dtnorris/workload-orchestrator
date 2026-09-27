@@ -2,7 +2,8 @@
 set -eu
 
 bundle exec ruby -c bin/wlo
-bundle exec ruby -c lib/workload_orchestrator.rb
-bundle exec ruby -c lib/workload_orchestrator/version.rb
+find lib test -type f -name '*.rb' -print | sort | while IFS= read -r file; do
+  bundle exec ruby -c "$file"
+done
 bundle exec rake
 bundle exec rubocop

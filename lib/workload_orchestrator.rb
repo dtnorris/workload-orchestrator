@@ -1,6 +1,16 @@
 # frozen_string_literal: true
 
 require_relative "workload_orchestrator/version"
+require_relative "workload_orchestrator/error"
+require_relative "workload_orchestrator/config"
+require_relative "workload_orchestrator/plan"
+require_relative "workload_orchestrator/worker"
+require_relative "workload_orchestrator/worker_set"
+require_relative "workload_orchestrator/worker_check"
+require_relative "workload_orchestrator/job_claim"
+require_relative "workload_orchestrator/execution_store"
+require_relative "workload_orchestrator/runner"
+require_relative "workload_orchestrator/cli"
 
 module WorkloadOrchestrator
 end
