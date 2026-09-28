@@ -54,7 +54,7 @@ class PlanTest < Minitest::Test
     )
     plan = WorkloadOrchestrator::Plan.load(grouped)
     assert plan.grouped_jobs?
-    assert_equal [%w[a-1 a-2]], plan.job_groups.map { |rows| rows.map(&:id) }
+    assert_equal([%w[a-1 a-2]], plan.job_groups.map { |rows| rows.map(&:id) })
 
     mixed = write_plan(
       @tmp,

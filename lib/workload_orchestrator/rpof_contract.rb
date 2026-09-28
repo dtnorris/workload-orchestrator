@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require_relative "error"
+require_relative "rpof_contract_values"
+require_relative "rpof_dispatch_validation"
 
 module WorkloadOrchestrator
   # WLO's public boundary. The provider's older wire names belong only in RpofClient.
@@ -12,6 +14,9 @@ module WorkloadOrchestrator
     ID = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
     ENV_KEY = /\A[A-Za-z_][A-Za-z0-9_]*\z/
     DIGEST = /\A[0-9a-f]{64}\z/i
+
+    extend RpofContractValues
+    extend RpofDispatchValidation
 
     module_function
 
@@ -100,99 +105,6 @@ module WorkloadOrchestrator
       raise Error, "ready capability result must include capabilities" unless result["capabilities"].is_a?(Hash)
 
       result
-    end
-
-    def dispatch_summary!(result, request, exit_status)
-      target = request["target"]
-      unless result["fleet_key"] == target["fleet_key"] && result["fleet_id"] == target["expected_fleet_id"]
-        raise Error, "dispatch fleet identity mismatch"
-      end
-      dispatch_workers!(result, target)
-      states = %w[completed workload_failed infrastructure_failed integrity_failed drained interrupted]
-      raise Error, "unsupported dispatch status" unless states.include?(result["status"])
-      unless (result["status"] == "completed") == exit_status.zero?
-        raise Error, "dispatch status disagrees with exit status"
-      end
-
-      counts = %w[job_count completed_count failed_count not_started_count].map do |key|
-        value = result[key]
-        raise Error, "#{key} must be a nonnegative integer" unless value.is_a?(Integer) && value >= 0
-
-        value
-      end
-      unless counts.first == request["jobs"].length && counts.first == counts.drop(1).sum
-        raise Error, "dispatch job counts mismatch"
-      end
-      validate_job_evidence!(result, request)
-      if result["status"] == "completed" && result["completed_count"] != result["job_count"]
-        raise Error, "completed dispatch has unfinished jobs"
-      end
-      result
-    end
-
-    def dispatch_workers!(result, target)
-      # RPOF's early infrastructure-failure summary may omit worker_indices.
-      if result.key?("worker_indices")
-        indices!(result["worker_indices"])
-        unless result["worker_indices"].sort == target["worker_indices"].sort
-          raise Error, "dispatch worker selection mismatch"
-        end
-      elsif result["status"] != "infrastructure_failed"
-        raise Error, "dispatch summary is missing worker_indices"
-      end
-    end
-
-    def validate_job_evidence!(result, request)
-      jobs = result["jobs"]
-      pending = result["not_started_job_ids"]
-      unless jobs.is_a?(Array) && jobs.all? { |job| job.is_a?(Hash) } && pending.is_a?(Array)
-        raise Error, "dispatch job evidence must be arrays"
-      end
-      ids = jobs.map { |job| job["job_id"] } + pending
-      expected = request["jobs"].map { |job| job["job_id"] }
-      unless ids.all? { |id| id.is_a?(String) } && ids.uniq.length == ids.length && ids.sort == expected.sort
-        raise Error, "dispatch job identities mismatch"
-      end
-      unless pending.length == result["not_started_count"] &&
-             jobs.count { |job| job["status"] == "completed" } == result["completed_count"] &&
-             jobs.count { |job| job["status"] == "failed" } == result["failed_count"]
-        raise Error, "dispatch job outcomes disagree with counts"
-      end
-    end
-
-    def object!(value, required, optional = [])
-      raise Error, "expected a JSON object" unless value.is_a?(Hash) && value.keys.all? { |key| key.is_a?(String) }
-      raise Error, "missing required fields" unless (required - value.keys).empty?
-      raise Error, "unknown fields" unless (value.keys - required - optional).empty?
-    end
-
-    def version!(document, expected)
-      raise Error, "unsupported contract_version; expected #{expected}" unless document["contract_version"] == expected
-    end
-
-    def text!(value, label, max: nil, pattern: nil)
-      unless value.is_a?(String) && !value.empty? && !value.include?("\0") &&
-             (!max || value.length <= max) && (!pattern || value.match?(pattern))
-        raise Error, "invalid #{label}"
-      end
-      value
-    end
-
-    def array!(value, label)
-      raise Error, "#{label} must be a non-empty array" unless value.is_a?(Array) && !value.empty?
-
-      value
-    end
-
-    def indices!(value)
-      array!(value, "worker indices")
-      unless value.all? { |index| index.is_a?(Integer) && index.positive? } && value.uniq.length == value.length
-        raise Error, "worker indices must be unique positive integers"
-      end
-    end
-
-    def boolean!(value, label)
-      raise Error, "#{label} must be boolean" unless [true, false].include?(value)
     end
   end
 end

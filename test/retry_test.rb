@@ -192,9 +192,9 @@ class RetryTest < Minitest::Test
     Dir.children(path).to_h { |name| [name, File.binread(File.join(path, name))] }
   end
 
-  def retry_cli(*args)
+  def retry_cli(*)
     cli("retry-failed", @plan_path, "--workdir", @workdir, "--output", @output,
-        "--reason", "repaired cause", *args)
+        "--reason", "repaired cause", *)
   end
 
   def cli(*args)

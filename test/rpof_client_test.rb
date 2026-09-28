@@ -27,7 +27,7 @@ class RpofClientTest < Minitest::Test
     recorded = JSON.parse(File.read(File.join(@root, "request.json")))
 
     assert_equal "afio-rpof-capability-check-request/v0.2", recorded.delete("contract_version")
-    assert_equal request.reject { |key, _| key == "contract_version" }, recorded
+    assert_equal request.except("contract_version"), recorded
     assert_equal Contract::CAPABILITY_RESULT, result.document["contract_version"]
     assert_equal "opaque-fleet-id", result.document["fleet_id"]
     assert_equal "provider detail", result.document["diagnostics"].first["detail"]
@@ -110,7 +110,7 @@ class RpofClientTest < Minitest::Test
     refute File.exist?(File.join(@root, "injected"))
     wire = JSON.parse(File.read(File.join(@root, "request.json")))
     assert_equal "afio-rpof-dispatch-request/v0.1", wire.delete("contract_version")
-    assert_equal request.reject { |key, _| key == "contract_version" }, wire
+    assert_equal request.except("contract_version"), wire
     persisted = JSON.parse(File.read(File.join(output, "summary.json")))
     assert_equal "afio-rpof-dispatch-summary/v0.1", persisted["contract_version"]
     assert_includes result.stdout, "provider stdout"
@@ -128,9 +128,9 @@ class RpofClientTest < Minitest::Test
 
   def test_infrastructure_failure_preserves_pending_evidence
     configure("exit" => 1, "overrides" => {
-      "status" => "infrastructure_failed", "jobs" => [], "completed_count" => 0,
-      "not_started_count" => 1, "not_started_job_ids" => ["opaque-job"]
-    })
+                "status" => "infrastructure_failed", "jobs" => [], "completed_count" => 0,
+                "not_started_count" => 1, "not_started_job_ids" => ["opaque-job"]
+              })
     result = dispatch
     assert_equal 1, result.exit_status
     assert_equal "infrastructure_failed", result.document["status"]
@@ -209,7 +209,7 @@ class RpofClientTest < Minitest::Test
   # An actual external process with no AFW or provider Ruby dependencies. It
   # runs harmless local fixture jobs, never contacts a provider or creates pods.
   def provider_fixture
-    <<~'RUBY'
+    <<~RUBY
       require "json"
       require "open3"
       control = JSON.parse(File.read(File.join(__dir__, "control.json")))

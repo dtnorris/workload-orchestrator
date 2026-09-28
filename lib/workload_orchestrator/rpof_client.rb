@@ -83,9 +83,7 @@ module WorkloadOrchestrator
     end
 
     def read_result(path, expected_version)
-      unless File.file?(path) && File.size?(path)
-        raise Error, "RPOF did not write a non-empty JSON result"
-      end
+      raise Error, "RPOF did not write a non-empty JSON result" unless File.file?(path) && File.size?(path)
 
       document = JSON.parse(File.read(path))
       raise Error, "RPOF result must be a JSON object" unless document.is_a?(Hash)
