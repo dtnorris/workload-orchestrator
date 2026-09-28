@@ -127,6 +127,11 @@ plan commands through an implicit shell.
 
 ## Development
 
+The additive [RPOF client seam](docs/rpof-client-v0.1.md) provides versioned
+capability checks and opaque dispatch through the RPOF executable for future
+remote executors. It is a library boundary; paid execution and integration with
+the WLO runner remain separate milestones.
+
 ```bash
 bundle exec rake
 script/check

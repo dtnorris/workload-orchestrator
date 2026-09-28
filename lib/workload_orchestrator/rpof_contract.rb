@@ -1,0 +1,198 @@
+# frozen_string_literal: true
+
+require_relative "error"
+
+module WorkloadOrchestrator
+  # WLO's public boundary. The provider's older wire names belong only in RpofClient.
+  module RpofContract
+    CAPABILITY_REQUEST = "wlo-rpof-capability-check-request/v0.1"
+    CAPABILITY_RESULT = "wlo-rpof-capability-check-result/v0.1"
+    DISPATCH_REQUEST = "wlo-rpof-dispatch-request/v0.1"
+    DISPATCH_SUMMARY = "wlo-rpof-dispatch-summary/v0.1"
+    ID = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
+    ENV_KEY = /\A[A-Za-z_][A-Za-z0-9_]*\z/
+    DIGEST = /\A[0-9a-f]{64}\z/i
+
+    module_function
+
+    def capability_request!(request)
+      object!(request, %w[contract_version fleet_key worker_selector requirements])
+      version!(request, CAPABILITY_REQUEST)
+      text!(request["fleet_key"], "fleet_key", max: 64, pattern: ID)
+      selector = request["worker_selector"]
+      raise Error, "worker_selector must be an object" unless selector.is_a?(Hash)
+
+      case selector["mode"]
+      when "all"
+        object!(selector, %w[mode])
+      when "indices"
+        object!(selector, %w[mode indices])
+        indices!(selector["indices"])
+      else
+        raise Error, "worker_selector.mode must be all or indices"
+      end
+      requirements!(request["requirements"])
+      request
+    end
+
+    def requirements!(requirements)
+      object!(requirements, %w[models required_context_length require_fully_gpu_resident], %w[required_gpu_id])
+      array!(requirements["models"], "models").each do |model|
+        object!(model, %w[name expected_digest])
+        text!(model["name"], "model name", max: 256)
+        text!(model["expected_digest"], "expected_digest", max: 64, pattern: DIGEST)
+      end
+      value = requirements["required_context_length"]
+      raise Error, "required_context_length must be a positive integer" unless value.is_a?(Integer) && value.positive?
+      raise Error, "require_fully_gpu_resident must be true" unless requirements["require_fully_gpu_resident"] == true
+
+      text!(requirements["required_gpu_id"], "required_gpu_id", max: 256) if requirements.key?("required_gpu_id")
+    end
+
+    def dispatch_request!(request)
+      object!(request, %w[contract_version target group_by_affinity jobs])
+      version!(request, DISPATCH_REQUEST)
+      target = request["target"]
+      object!(target, %w[fleet_key expected_fleet_id worker_indices])
+      text!(target["fleet_key"], "fleet_key", max: 64, pattern: ID)
+      text!(target["expected_fleet_id"], "expected_fleet_id", max: 256)
+      indices!(target["worker_indices"])
+      boolean!(request["group_by_affinity"], "group_by_affinity")
+      jobs = array!(request["jobs"], "jobs")
+      jobs.each { |job| job!(job) }
+      ids = jobs.map { |job| job["job_id"] }
+      raise Error, "duplicate job_id" unless ids.uniq.length == ids.length
+
+      request
+    end
+
+    def job!(job)
+      object!(job, %w[job_id argv], %w[env affinity])
+      text!(job["job_id"], "job_id", max: 128, pattern: ID)
+      array!(job["argv"], "argv").each do |value|
+        raise Error, "argv must contain strings without NUL bytes" unless value.is_a?(String) && !value.include?("\0")
+      end
+      text!(job["argv"].first, "argv executable")
+      if job.key?("env")
+        env = job["env"]
+        valid = env.is_a?(Hash) && env.all? do |key, value|
+          key.is_a?(String) && key.match?(ENV_KEY) && value.is_a?(String) && !value.include?("\0")
+        end
+        raise Error, "env must map names to NUL-free strings; RPOF does not support null/unset" unless valid
+      end
+      text!(job["affinity"], "affinity", max: 256) if job.key?("affinity")
+    end
+
+    def capability_result!(result, request, exit_status)
+      boolean!(result["ready"], "ready")
+      raise Error, "capability fleet_key mismatch" unless result["fleet_key"] == request["fleet_key"]
+      raise Error, "capability diagnostics must be an array" unless result["diagnostics"].is_a?(Array)
+      raise Error, "capability readiness disagrees with exit status" unless result["ready"] == exit_status.zero?
+
+      return result unless result["ready"]
+
+      text!(result["fleet_id"], "fleet_id", max: 256)
+      indices!(result["selected_worker_indices"])
+      selector = request["worker_selector"]
+      if selector["mode"] == "indices" && result["selected_worker_indices"].sort != selector["indices"].sort
+        raise Error, "capability worker selection mismatch"
+      end
+      raise Error, "ready capability result must include capabilities" unless result["capabilities"].is_a?(Hash)
+
+      result
+    end
+
+    def dispatch_summary!(result, request, exit_status)
+      target = request["target"]
+      unless result["fleet_key"] == target["fleet_key"] && result["fleet_id"] == target["expected_fleet_id"]
+        raise Error, "dispatch fleet identity mismatch"
+      end
+      dispatch_workers!(result, target)
+      states = %w[completed workload_failed infrastructure_failed integrity_failed drained interrupted]
+      raise Error, "unsupported dispatch status" unless states.include?(result["status"])
+      unless (result["status"] == "completed") == exit_status.zero?
+        raise Error, "dispatch status disagrees with exit status"
+      end
+
+      counts = %w[job_count completed_count failed_count not_started_count].map do |key|
+        value = result[key]
+        raise Error, "#{key} must be a nonnegative integer" unless value.is_a?(Integer) && value >= 0
+
+        value
+      end
+      unless counts.first == request["jobs"].length && counts.first == counts.drop(1).sum
+        raise Error, "dispatch job counts mismatch"
+      end
+      validate_job_evidence!(result, request)
+      if result["status"] == "completed" && result["completed_count"] != result["job_count"]
+        raise Error, "completed dispatch has unfinished jobs"
+      end
+      result
+    end
+
+    def dispatch_workers!(result, target)
+      # RPOF's early infrastructure-failure summary may omit worker_indices.
+      if result.key?("worker_indices")
+        indices!(result["worker_indices"])
+        unless result["worker_indices"].sort == target["worker_indices"].sort
+          raise Error, "dispatch worker selection mismatch"
+        end
+      elsif result["status"] != "infrastructure_failed"
+        raise Error, "dispatch summary is missing worker_indices"
+      end
+    end
+
+    def validate_job_evidence!(result, request)
+      jobs = result["jobs"]
+      pending = result["not_started_job_ids"]
+      unless jobs.is_a?(Array) && jobs.all? { |job| job.is_a?(Hash) } && pending.is_a?(Array)
+        raise Error, "dispatch job evidence must be arrays"
+      end
+      ids = jobs.map { |job| job["job_id"] } + pending
+      expected = request["jobs"].map { |job| job["job_id"] }
+      unless ids.all? { |id| id.is_a?(String) } && ids.uniq.length == ids.length && ids.sort == expected.sort
+        raise Error, "dispatch job identities mismatch"
+      end
+      unless pending.length == result["not_started_count"] &&
+             jobs.count { |job| job["status"] == "completed" } == result["completed_count"] &&
+             jobs.count { |job| job["status"] == "failed" } == result["failed_count"]
+        raise Error, "dispatch job outcomes disagree with counts"
+      end
+    end
+
+    def object!(value, required, optional = [])
+      raise Error, "expected a JSON object" unless value.is_a?(Hash) && value.keys.all? { |key| key.is_a?(String) }
+      raise Error, "missing required fields" unless (required - value.keys).empty?
+      raise Error, "unknown fields" unless (value.keys - required - optional).empty?
+    end
+
+    def version!(document, expected)
+      raise Error, "unsupported contract_version; expected #{expected}" unless document["contract_version"] == expected
+    end
+
+    def text!(value, label, max: nil, pattern: nil)
+      unless value.is_a?(String) && !value.empty? && !value.include?("\0") &&
+             (!max || value.length <= max) && (!pattern || value.match?(pattern))
+        raise Error, "invalid #{label}"
+      end
+      value
+    end
+
+    def array!(value, label)
+      raise Error, "#{label} must be a non-empty array" unless value.is_a?(Array) && !value.empty?
+
+      value
+    end
+
+    def indices!(value)
+      array!(value, "worker indices")
+      unless value.all? { |index| index.is_a?(Integer) && index.positive? } && value.uniq.length == value.length
+        raise Error, "worker indices must be unique positive integers"
+      end
+    end
+
+    def boolean!(value, label)
+      raise Error, "#{label} must be boolean" unless [true, false].include?(value)
+    end
+  end
+end
