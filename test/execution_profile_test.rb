@@ -36,7 +36,7 @@ class ExecutionProfileTest < Minitest::Test
       assert_equal original, bound.bytes
       assert_equal plan.sha256, bound.sha256
       assert_same plan.jobs, bound.jobs
-      assert_same plan.pools.first.ollama_requirement, bound.pools.first.ollama_requirement
+      assert_nil bound.pools.first.ollama_requirement
       assert_equal ["local-pool"], bound.pools.map(&:id)
     end
     assert_nil plan.pools.first.worker_names
