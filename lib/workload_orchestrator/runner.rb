@@ -13,6 +13,7 @@ module WorkloadOrchestrator
       @store = ExecutionStore.new(output_dir: output_dir, plan: plan, workdir: @workdir)
       @worker_check = worker_check
       @out = out
+      @job_positions = plan.jobs.each_with_index.to_h { |job, index| [job.id, index + 1] }.freeze
     end
 
     def run(resume: false, acknowledge_circuit_breaker: false)
@@ -101,7 +102,7 @@ module WorkloadOrchestrator
     def execute_job(job, worker)
       environment = merged_environment(worker, job)
       started_at = store.record_running!(job: job, worker: worker, environment_keys: environment.keys)
-      @out.puts "[#{worker.name}] #{job.id}"
+      @out.puts "[#{@job_positions.fetch(job.id)}/#{plan.jobs.length}] [#{worker.name}] #{job.id}"
       execute_command(job, environment, started_at)
     end
 

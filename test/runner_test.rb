@@ -93,6 +93,25 @@ class RunnerTest < Minitest::Test
     assert_equal %w[a-one b-one a-two b-two], File.readlines(order, chomp: true)
   end
 
+  def test_job_output_includes_stable_plan_position_and_total
+    plan = load_plan(
+      [
+        job("job-1", code: "exit 0"),
+        job("job-2", code: "exit 0"),
+        job("job-3", code: "exit 0")
+      ]
+    )
+    out = StringIO.new
+    runner = WorkloadOrchestrator::Runner.new(
+      plan: plan, workers: @workers, workdir: @workdir, output_dir: @output, out: out
+    )
+
+    assert_equal "completed", runner.run
+    assert_includes out.string, "[1/3] [local] job-1"
+    assert_includes out.string, "[2/3] [local] job-2"
+    assert_includes out.string, "[3/3] [local] job-3"
+  end
+
   def test_environment_can_explicitly_remove_inherited_value
     code = 'puts ENV.key?("WLO_TEST_SECRET") ? ENV.fetch("WLO_TEST_SECRET") : "unset"'
     plan = load_plan([job("job-1", code: code, env: { "WLO_TEST_SECRET" => nil })])
