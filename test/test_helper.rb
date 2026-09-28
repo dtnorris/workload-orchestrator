@@ -55,12 +55,13 @@ module WloTestSupport
     }
   end
 
-  def job(id, code:, pool_id: "local-pool", env: nil)
+  def job(id, code:, pool_id: "local-pool", group_id: nil, env: nil)
     row = {
       "job_id" => id,
       "pool_id" => pool_id,
       "argv" => [RbConfig.ruby, "-e", code]
     }
+    row["group_id"] = group_id if group_id
     row["env"] = env if env
     row
   end

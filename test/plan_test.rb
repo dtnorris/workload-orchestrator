@@ -43,6 +43,31 @@ class PlanTest < Minitest::Test
     assert_includes error.message, "duplicate job_id"
   end
 
+  def test_group_id_enables_grouped_scheduling_and_mixed_grouping_is_rejected
+    grouped = write_plan(
+      @tmp,
+      jobs: [
+        job("a-1", code: "exit 0", group_id: "adventure-a"),
+        job("a-2", code: "exit 0", group_id: "adventure-a")
+      ],
+      name: "grouped.json"
+    )
+    plan = WorkloadOrchestrator::Plan.load(grouped)
+    assert plan.grouped_jobs?
+    assert_equal [%w[a-1 a-2]], plan.job_groups.map { |rows| rows.map(&:id) }
+
+    mixed = write_plan(
+      @tmp,
+      jobs: [
+        job("a-1", code: "exit 0", group_id: "adventure-a"),
+        job("ungrouped", code: "exit 0")
+      ],
+      name: "mixed.json"
+    )
+    error = assert_raises(WorkloadOrchestrator::Error) { WorkloadOrchestrator::Plan.load(mixed) }
+    assert_includes error.message, "all define group_id or all omit it"
+  end
+
   def test_environment_values_are_strings_or_null
     path = write_plan(
       @tmp,

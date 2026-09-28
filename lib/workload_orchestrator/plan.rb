@@ -12,7 +12,8 @@ module WorkloadOrchestrator
     TOP_KEYS = %w[contract_version plan_id failure_policy pools jobs].freeze
     POOL_KEYS = %w[pool_id worker_names max_concurrency].freeze
     POOL_OPTIONAL_KEYS = %w[required_labels requirements].freeze
-    JOB_KEYS = %w[job_id pool_id argv env].freeze
+    JOB_KEYS = %w[job_id pool_id argv].freeze
+    JOB_OPTIONAL_KEYS = %w[env group_id].freeze
     FAILURE_KEYS = %w[max_consecutive_failures max_total_failures].freeze
     REQUIREMENT_KEYS = %w[ollama].freeze
     OLLAMA_KEYS = %w[model expected_digest].freeze
@@ -21,7 +22,7 @@ module WorkloadOrchestrator
       :id, :worker_names, :required_labels, :ollama_requirement, :max_concurrency,
       keyword_init: true
     )
-    Job = Struct.new(:id, :pool_id, :argv, :env, keyword_init: true)
+    Job = Struct.new(:id, :pool_id, :group_id, :argv, :env, keyword_init: true)
 
     attr_reader :path, :bytes, :sha256, :id, :failure_policy, :pools, :jobs
 
@@ -47,6 +48,16 @@ module WorkloadOrchestrator
 
     def pool(id)
       pools.find { |candidate| candidate.id == id }
+    end
+
+    def grouped_jobs?
+      !jobs.empty? && !jobs.first.group_id.nil?
+    end
+
+    def job_groups
+      return [] unless grouped_jobs?
+
+      jobs.group_by(&:group_id).values
     end
 
     private
@@ -127,18 +138,24 @@ module WorkloadOrchestrator
       duplicate = duplicate_value(jobs.map(&:id))
       raise Error, "duplicate job_id #{duplicate.inspect}" if duplicate
 
+      grouped_count = jobs.count { |job| !job.group_id.nil? }
+      if grouped_count.positive? && grouped_count != jobs.length
+        raise Error, "jobs must either all define group_id or all omit it"
+      end
+
       jobs.freeze
     end
 
     def parse_job(value, index, pool_ids)
       data = mapping!(value, "jobs[#{index}]")
-      validate_keys!(data, JOB_KEYS, "jobs[#{index}]", optional: %w[env])
+      validate_keys!(data, JOB_KEYS, "jobs[#{index}]", optional: JOB_OPTIONAL_KEYS)
       pool_id = identifier!(data.fetch("pool_id"), "jobs[#{index}].pool_id")
       raise Error, "jobs[#{index}] references unknown pool #{pool_id.inspect}" unless pool_ids.include?(pool_id)
 
       Job.new(
         id: identifier!(data.fetch("job_id"), "jobs[#{index}].job_id"),
         pool_id: pool_id,
+        group_id: data.key?("group_id") ? identifier!(data.fetch("group_id"), "jobs[#{index}].group_id") : nil,
         argv: string_array!(data.fetch("argv"), "jobs[#{index}].argv").freeze,
         env: environment!(data.fetch("env", {}), "jobs[#{index}].env").freeze
       ).freeze

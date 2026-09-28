@@ -28,6 +28,7 @@ class CliTest < Minitest::Test
       "--workers-config", @workers_path
     )
     assert_equal 0, code
+    assert_includes out, "Scheduling: pool-major (legacy)"
     assert_includes out, "Zero-cost gate: PASS"
 
     code, = run_cli(
@@ -43,6 +44,26 @@ class CliTest < Minitest::Test
     document = JSON.parse(out)
     assert_equal "completed", document.fetch("status")
     assert_equal "complete", document.fetch("jobs").first.fetch("status")
+  end
+
+  def test_plan_reports_group_major_scheduling
+    grouped_plan = write_plan(
+      @tmp,
+      jobs: [
+        job("a", code: "exit 0", group_id: "adventure-a"),
+        job("b", code: "exit 0", group_id: "adventure-b")
+      ],
+      name: "grouped.json"
+    )
+
+    code, out, = run_cli(
+      "plan", grouped_plan,
+      "--workdir", @workdir,
+      "--workers-config", @workers_path
+    )
+
+    assert_equal 0, code
+    assert_includes out, "Scheduling: group-major (2 groups)"
   end
 
   def test_pause_and_resume_commands

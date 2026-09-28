@@ -53,6 +53,46 @@ class RunnerTest < Minitest::Test
     assert_equal %w[local local2], assigned.sort
   end
 
+  def test_grouped_jobs_run_group_major_across_pools
+    order = File.join(@workdir, "order.txt")
+    append = ->(value) { "File.open(#{order.inspect}, 'a') { |file| file.puts #{value.inspect} }" }
+    second_pool = command_pool.merge("pool_id" => "second-pool")
+    plan_path = write_plan(
+      @tmp,
+      pools: [command_pool, second_pool],
+      jobs: [
+        job("a-one", code: append.call("a-one"), group_id: "adventure-a"),
+        job("a-two", code: append.call("a-two"), pool_id: "second-pool", group_id: "adventure-a"),
+        job("b-one", code: append.call("b-one"), group_id: "adventure-b"),
+        job("b-two", code: append.call("b-two"), pool_id: "second-pool", group_id: "adventure-b")
+      ]
+    )
+    plan = WorkloadOrchestrator::Plan.load(plan_path)
+
+    assert_equal "completed", build_runner(plan).run
+    assert_equal %w[a-one a-two b-one b-two], File.readlines(order, chomp: true)
+  end
+
+  def test_ungrouped_jobs_retain_pool_major_order
+    order = File.join(@workdir, "order.txt")
+    append = ->(value) { "File.open(#{order.inspect}, 'a') { |file| file.puts #{value.inspect} }" }
+    second_pool = command_pool.merge("pool_id" => "second-pool")
+    plan_path = write_plan(
+      @tmp,
+      pools: [command_pool, second_pool],
+      jobs: [
+        job("a-one", code: append.call("a-one")),
+        job("a-two", code: append.call("a-two"), pool_id: "second-pool"),
+        job("b-one", code: append.call("b-one")),
+        job("b-two", code: append.call("b-two"), pool_id: "second-pool")
+      ]
+    )
+    plan = WorkloadOrchestrator::Plan.load(plan_path)
+
+    assert_equal "completed", build_runner(plan).run
+    assert_equal %w[a-one b-one a-two b-two], File.readlines(order, chomp: true)
+  end
+
   def test_environment_can_explicitly_remove_inherited_value
     code = 'puts ENV.key?("WLO_TEST_SECRET") ? ENV.fetch("WLO_TEST_SECRET") : "unset"'
     plan = load_plan([job("job-1", code: code, env: { "WLO_TEST_SECRET" => nil })])

@@ -26,9 +26,10 @@ module WorkloadOrchestrator
 
       check_workers!
       store.start!
-      plan.pools.each do |pool|
-        run_pool(pool)
-        break if stop_dispatch?
+      if plan.grouped_jobs?
+        run_job_groups
+      else
+        run_pools
       end
       finalize_and_report
     end
@@ -48,8 +49,26 @@ module WorkloadOrchestrator
       @worker_check.check_plan!(plan, workers)
     end
 
-    def run_pool(pool)
-      pending = plan.jobs.select { |job| job.pool_id == pool.id && !store.terminal?(job) }
+    def run_pools
+      plan.pools.each do |pool|
+        run_pool(pool, jobs: plan.jobs)
+        break if stop_dispatch?
+      end
+    end
+
+    def run_job_groups
+      plan.job_groups.each do |jobs|
+        @out.puts "Group: #{jobs.first.group_id}"
+        plan.pools.each do |pool|
+          run_pool(pool, jobs: jobs)
+          break if stop_dispatch?
+        end
+        break if stop_dispatch?
+      end
+    end
+
+    def run_pool(pool, jobs:)
+      pending = jobs.select { |job| job.pool_id == pool.id && !store.terminal?(job) }
       return if pending.empty?
 
       queue = Queue.new

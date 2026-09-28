@@ -37,6 +37,7 @@ A different plan or working directory cannot resume into that output.
     {
       "job_id": "example-1",
       "pool_id": "local-pool",
+      "group_id": "adventure-1",
       "argv": ["ruby", "-e", "puts 'hello'"],
       "env": {}
     }
@@ -113,9 +114,19 @@ Required job fields:
 Optional:
 
 - `env`
+- `group_id` — opaque scheduling group identifier
 
 `argv` is a non-empty array of non-empty strings. WLO executes it directly; it
 does not invoke an implicit shell.
+
+If every job supplies `group_id`, WLO executes groups in first-seen job order
+and completes each group before dispatching the next group. Pool ordering and
+per-pool concurrency still apply within a group. This lets producers request
+domain-appropriate progress (for example, complete one adventure before moving
+to the next) without WLO deriving semantics from opaque job IDs.
+
+A plan must either supply `group_id` for every job or omit it for every job.
+Plans that omit it retain the v0.1 pool-major scheduling behavior.
 
 `env` maps environment names to either a string or `null`.
 
