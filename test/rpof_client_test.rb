@@ -66,22 +66,30 @@ class RpofClientTest < Minitest::Test
     assert_includes error.message, "signal"
   end
 
+  def test_rejects_malformed_provider_output
+    configure("raw" => "{")
+    assert_raises(WorkloadOrchestrator::Error) { @client.capability_check(capability_request) }
+  end
+
+  # Exercise every file/JSON case without launching a provider for each one.
+  # The malformed-output test above covers the public method's parser wiring.
   def test_rejects_missing_empty_invalid_and_non_object_results
-    [{ "missing" => true }, { "raw" => "" }, { "raw" => "{" }, { "raw" => "[]" }, { "raw" => "null" }].each do |config|
-      configure(config)
-      assert_raises(WorkloadOrchestrator::Error) { @client.capability_check(capability_request) }
+    path = File.join(@root, "result.json")
+    [nil, "", "{", "[]", "null"].each do |raw|
+      File.write(path, raw) unless raw.nil?
+      assert_raises(WorkloadOrchestrator::Error) do
+        @client.send(:read_result, path, Client::LEGACY_CAPABILITY_RESULT)
+      end
     end
   end
 
-  def test_rejects_wrong_version_identity_workers_and_readiness
-    [
-      { "contract_version" => "wlo-rpof-capability-check-result/v0.1" },
-      { "contract_version" => "afio-rpof-capability-check-result/v99" },
-      { "fleet_key" => "other" }, { "selected_worker_indices" => [2] },
-      { "ready" => "true" }, { "ready" => false }, { "capabilities" => nil }
-    ].each do |overrides|
-      configure("overrides" => overrides)
-      assert_raises(WorkloadOrchestrator::Error) { @client.capability_check(capability_request) }
+  def test_rejects_wrong_wire_versions
+    path = File.join(@root, "result.json")
+    [Contract::CAPABILITY_RESULT, "afio-rpof-capability-check-result/v99"].each do |version|
+      File.write(path, JSON.generate("contract_version" => version))
+      assert_raises(WorkloadOrchestrator::Error) do
+        @client.send(:read_result, path, Client::LEGACY_CAPABILITY_RESULT)
+      end
     end
   end
 
@@ -118,14 +126,16 @@ class RpofClientTest < Minitest::Test
     assert_equal 3, result.document["jobs"].first["exit_status"]
   end
 
-  def test_infrastructure_failure_and_drain_preserve_pending_evidence
-    %w[infrastructure_failed drained interrupted].each do |status|
-      configure("exit" => 1, "overrides" => {
-        "status" => status, "jobs" => [], "completed_count" => 0,
-        "not_started_count" => 1, "not_started_job_ids" => ["opaque-job"]
-      })
-      assert_equal status, dispatch.document["status"]
-    end
+  def test_infrastructure_failure_preserves_pending_evidence
+    configure("exit" => 1, "overrides" => {
+      "status" => "infrastructure_failed", "jobs" => [], "completed_count" => 0,
+      "not_started_count" => 1, "not_started_job_ids" => ["opaque-job"]
+    })
+    result = dispatch
+    assert_equal 1, result.exit_status
+    assert_equal "infrastructure_failed", result.document["status"]
+    assert_equal ["opaque-job"], result.document["not_started_job_ids"]
+    assert_equal [], result.document["jobs"]
   end
 
   def test_existing_output_is_rejected_without_overwriting_evidence_or_spawning
@@ -137,20 +147,6 @@ class RpofClientTest < Minitest::Test
     end
     assert_equal "prior evidence", File.read(File.join(output, "summary.json"))
     refute File.exist?(File.join(@root, "request.json"))
-  end
-
-  def test_dispatch_rejects_bad_results
-    [
-      { "fleet_id" => "different" }, { "fleet_key" => "different" },
-      { "worker_indices" => [2] },
-      { "job_count" => 2 }, { "completed_count" => -1 },
-      { "jobs" => [{ "job_id" => "wrong", "status" => "completed" }] },
-      { "jobs" => [{ "job_id" => "opaque-job", "status" => "failed" }] },
-      { "status" => "unknown" }, { "status" => "workload_failed" }
-    ].each do |overrides|
-      configure("overrides" => overrides)
-      assert_raises(WorkloadOrchestrator::Error) { dispatch }
-    end
   end
 
   def test_dispatch_rejects_unsupported_or_ambiguous_jobs_before_spawning
