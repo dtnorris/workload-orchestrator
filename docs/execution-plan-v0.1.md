@@ -168,6 +168,12 @@ OUTPUT/
   plan.json
   execution.json
   jobs.json
+  attempts/
+    JOB_ID/
+      attempt-N/
+        metadata.json
+        stdout.log
+        stderr.log
   claims/
   control/
   runs/
@@ -184,3 +190,10 @@ worker, status, attempt, timestamps, elapsed time, exit status, argv, and the
 names of environment variables overridden for that child process.
 
 WLO does not parse domain-specific result files.
+
+`attempts/` is created only by explicit failed-job retry. It retains the prior
+attempt's available WLO evidence; `runs/` remains the latest attempt. Retry
+history and attempt-bound authorization are additive execution-state fields,
+not changes to the frozen plan contract. `jobs.json` includes attempt numbers
+and reports authorized retries as pending. See README for retry operation and
+upgrade semantics.

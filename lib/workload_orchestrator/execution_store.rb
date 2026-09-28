@@ -3,9 +3,12 @@
 require "fileutils"
 require "json"
 require "time"
+require_relative "execution_retry"
 
 module WorkloadOrchestrator
   class ExecutionStore
+    include ExecutionRetry
+
     CONTRACT_VERSION = "wlo-execution-state/v0.1"
     TERMINAL_JOB_STATUSES = %w[complete failed].freeze
 
@@ -31,6 +34,17 @@ module WorkloadOrchestrator
         rebuild_jobs_unlocked
       end
       self
+    end
+
+    def with_execution_lock
+      FileUtils.mkdir_p(output_dir)
+      File.open(File.join(output_dir, ".execution.lock"), File::RDWR | File::CREAT, 0o644) do |file|
+        unless file.flock(File::LOCK_EX | File::LOCK_NB)
+          raise Error, "execution is active; wait for the runner to exit before retrying or resuming"
+        end
+
+        yield
+      end
     end
 
     def start!
@@ -74,12 +88,7 @@ module WorkloadOrchestrator
         breaker = state.fetch("circuit_breaker")
         raise Error, "circuit breaker is not tripped" unless breaker.fetch("tripped")
 
-        breaker["generation"] = Integer(breaker.fetch("generation")) + 1
-        breaker["tripped"] = false
-        breaker["reason"] = nil
-        breaker["consecutive_failures"] = 0
-        breaker["total_failures"] = 0
-        breaker["acknowledged_at"] = timestamp
+        reset_breaker!(breaker)
         state["status"] = "pending"
       end
     end
@@ -98,7 +107,11 @@ module WorkloadOrchestrator
       allowed = TERMINAL_JOB_STATUSES + ["running"]
       raise Error, "invalid job status #{status.inspect} in #{path}" unless allowed.include?(status)
 
-      document
+      if status == "failed" && read_execution.fetch("retry_pending", {})[job.id] == document.fetch("attempt", 1)
+        document.merge("status" => "pending")
+      else
+        document
+      end
     rescue JSON::ParserError, KeyError => e
       raise Error, "invalid job metadata #{path}: #{e.message}"
     end
@@ -170,6 +183,15 @@ module WorkloadOrchestrator
 
     private
 
+    def reset_breaker!(breaker)
+      breaker["generation"] = Integer(breaker.fetch("generation")) + 1
+      breaker["tripped"] = false
+      breaker["reason"] = nil
+      breaker["consecutive_failures"] = 0
+      breaker["total_failures"] = 0
+      breaker["acknowledged_at"] = timestamp
+    end
+
     def initial_execution
       {
         "contract_version" => CONTRACT_VERSION,
@@ -200,7 +222,7 @@ module WorkloadOrchestrator
     end
 
     def ensure_unclaimed_output!
-      entries = Dir.children(output_dir) - [".state.lock"]
+      entries = Dir.children(output_dir) - %w[.state.lock .execution.lock]
       return if entries.empty?
 
       raise Error, "output directory is not empty and has no WLO execution state: #{output_dir}"
@@ -283,6 +305,7 @@ module WorkloadOrchestrator
           "job_id" => job.id,
           "pool_id" => job.pool_id,
           "status" => metadata ? metadata.fetch("status") : "pending",
+          "attempt" => metadata && metadata["attempt"],
           "worker" => metadata && metadata["worker"],
           "exit_status" => metadata && metadata["exit_status"]
         }

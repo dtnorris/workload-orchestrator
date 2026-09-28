@@ -19,6 +19,12 @@ module WorkloadOrchestrator
     def run(resume: false, acknowledge_circuit_breaker: false)
       validate_workdir!
       workers.validate_plan!(plan)
+      store.with_execution_lock { run_locked(resume, acknowledge_circuit_breaker) }
+    end
+
+    private
+
+    def run_locked(resume, acknowledge_circuit_breaker)
       store.prepare!
       prepare_resume!(resume, acknowledge_circuit_breaker)
       return finalize_and_report if store.paused?
@@ -34,8 +40,6 @@ module WorkloadOrchestrator
       end
       finalize_and_report
     end
-
-    private
 
     def prepare_resume!(resume, acknowledge)
       return unless resume

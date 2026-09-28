@@ -28,6 +28,7 @@ WLO owns:
 - cross-process job claims;
 - pause and resume;
 - sticky terminal job states;
+- audited retry authorization and failed-attempt archives;
 - failure circuit breaking;
 - immutable plan/output identity;
 - stdout/stderr/metadata execution evidence; and
@@ -55,6 +56,21 @@ Each plan declares consecutive and total failure thresholds. When a threshold
 is reached, no additional pending job is dispatched. Already-running jobs may
 finish. Continuing pending work requires explicit breaker acknowledgement;
 terminal failed jobs are still not rerun.
+
+`retry-failed` is the explicit exception to failed-job terminality. It requires
+an idle execution, validated selection and a reason; a tripped breaker also
+requires acknowledgement. It archives WLO-owned evidence and records all
+selected attempts in one atomic execution-state update, leaving execution
+paused. Retry authorization changes the effective job status to pending only
+while the retained failed metadata still matches the authorized attempt number.
+The next dispatch increments that number; the old authorization cannot retry a
+later failure. Neither the frozen plan nor execution identity changes.
+
+Run/resume hold an execution-wide nonblocking filesystem lock for their full
+lifetime. Retry takes the same lock before validating or copying evidence, in
+addition to the state lock. Existing per-job claims remain in use. The process
+lock is released by the OS on exit. This serializes executors for one output;
+configured worker concurrency within an executor is unchanged.
 
 ## Cost boundary
 

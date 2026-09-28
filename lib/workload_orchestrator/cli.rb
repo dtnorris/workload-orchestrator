@@ -35,6 +35,7 @@ module WorkloadOrchestrator
       when "worker-check" then worker_check_command
       when "run" then run_command(resume: false)
       when "resume" then run_command(resume: true)
+      when "retry-failed" then retry_failed_command
       when "status" then status_command
       when "pause" then pause_command
       else raise Error, "unknown command #{command.inspect}; run bin/wlo --help"
@@ -99,6 +100,38 @@ module WorkloadOrchestrator
       state = load_execution_for_status(plan, output)
       @out.puts JSON.pretty_generate(state)
       0
+    end
+
+    def retry_failed_command
+      plan_path = required_argument!("PLAN.json")
+      options = parse_retry_options
+      reject_extra_arguments!
+      store = ExecutionStore.new(
+        plan: load_plan(plan_path), workdir: require_workdir(options), output_dir: options.fetch(:output)
+      )
+      selected = store.retry_failed!(
+        all: options.fetch(:all), job_ids: options.fetch(:jobs), reason: options.fetch(:reason),
+        acknowledge_circuit_breaker: options.fetch(:acknowledge)
+      )
+      @out.puts "Retry queued: #{selected.join(', ')}"
+      @out.puts "Execution remains paused. Resume the same plan, workdir and output to run pending jobs."
+      0
+    end
+
+    def parse_retry_options
+      options = { all: false, jobs: [], reason: nil, acknowledge: false }
+      OptionParser.new do |opts|
+        opts.on("--workdir DIR") { |value| options[:workdir] = value }
+        opts.on("--output DIR") { |value| options[:output] = value }
+        opts.on("--all") { options[:all] = true }
+        opts.on("--job ID") { |value| options[:jobs] << value }
+        opts.on("--reason TEXT") { |value| options[:reason] = value }
+        opts.on("--acknowledge-circuit-breaker") { options[:acknowledge] = true }
+      end.parse!(@argv)
+      %i[workdir output reason].each do |key|
+        raise OptionParser::MissingArgument, "--#{key}" if options[key].to_s.strip.empty?
+      end
+      options
     end
 
     def pause_command
@@ -234,6 +267,8 @@ module WorkloadOrchestrator
           bin/wlo status PLAN.json --output DIR
           bin/wlo pause --output DIR
           bin/wlo resume PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--acknowledge-circuit-breaker]
+          bin/wlo retry-failed PLAN.json --workdir DIR --output DIR (--all | --job ID ...) --reason TEXT
+                               [--acknowledge-circuit-breaker]
           bin/wlo --version
       HELP
       0

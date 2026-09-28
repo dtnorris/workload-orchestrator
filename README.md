@@ -16,6 +16,7 @@ WLO v0.1 implements a deliberately small, zero-cost local execution kernel:
 - sticky terminal states and resumable execution;
 - cross-process filesystem job claims;
 - graceful pause/resume;
+- explicit, audited failed-job retry with preserved attempt evidence;
 - failure circuit breaking;
 - immutable plan/output identity;
 - execution status reporting; and
@@ -74,8 +75,8 @@ bin/wlo status examples/hello-plan.json \
   --output output/hello-local
 ```
 
-A normal rerun or resume never reruns jobs already recorded as `complete` or
-`failed`.
+A normal rerun or resume skips `complete` and `failed` jobs unless a failed
+job has been explicitly authorized for retry using `retry-failed`.
 
 ## Pause and resume
 
@@ -109,6 +110,60 @@ bin/wlo resume examples/hello-plan.json \
 
 Failed jobs remain terminal; acknowledgement only resets the breaker counters
 for still-pending work.
+
+## Retry failed jobs
+
+After repairing the cause, use `retry-failed` to queue another attempt. First
+pause and wait for the runner to exit with no running jobs. When upgrading an
+existing execution to this version, stop the old runner before using retry;
+older runners do not participate in the new execution-wide lock.
+
+```bash
+bin/wlo retry-failed PLAN.json \
+  --workdir /absolute/original/workdir \
+  --output /absolute/original/output \
+  --all \
+  --reason "Repaired the cause after reviewing failed-job logs" \
+  --acknowledge-circuit-breaker
+```
+
+Supply `--acknowledge-circuit-breaker` only when the breaker is tripped. Instead
+of `--all`, use one or more `--job JOB_ID` options to retry selected failed jobs.
+Selection and a nonblank reason are mandatory. Unknown, duplicate, completed,
+running, already-queued, or never-started job selections fail without authorizing
+any retry. `--all` selects only currently failed jobs.
+
+The command queues work and leaves the execution paused; it launches no jobs.
+Resume with the original plan, workdir, output, and worker configuration.
+Resume runs all pending work, including previously unstarted jobs. Completed
+jobs and failed jobs not selected for retry remain untouched. Attempt numbers
+increase when a new attempt actually starts. Normal resume alone still does
+not retry failures.
+
+Before authorizing a retry, WLO copies each selected attempt's `metadata.json`,
+`stdout.log`, and `stderr.log` (when present) to
+`OUTPUT/attempts/JOB_ID/attempt-N/`. Those snapshots are never overwritten.
+`OUTPUT/runs/JOB_ID/` continues to contain the latest attempt. The original
+failed metadata remains there until the retry starts; `wlo status` and
+`jobs.json` report the authorized job as pending in the meantime.
+
+`execution.json` retains `retry_history`: timestamp, operator-supplied reason,
+selected job IDs and prior attempt numbers, archive paths, and the breaker
+state before acknowledgement. Breaker acknowledgement resets counters and
+advances its generation while preserving its trip history. Without
+acknowledgement, existing counters remain in force.
+
+The execution-wide lock excludes concurrent run/resume/retry operations.
+Retry authorization is an atomic state update after all archives succeed.
+If copying is interrupted, failures remain terminal; repeating the command
+reuses byte-identical snapshots and refuses conflicting snapshots.
+The immutable plan and workdir checks remain enforced. Existing v0.1 output
+directories are supported without regeneration or metadata deletion.
+
+WLO preserves its own execution evidence only. It cannot make an arbitrary job
+idempotent or restore application-owned files outside these logs; inspect any
+partial effects before retrying. Continue using this WLO version after queuing
+retries because older binaries do not understand retry authorization.
 
 ## Worker configuration
 
