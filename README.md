@@ -24,6 +24,17 @@ WLO v0.1 implements a deliberately small, zero-cost local execution kernel:
 
 WLO does not interpret the domain meaning of a workload or its results.
 
+## Provider-neutral workloads
+
+New v0.2 plans declare logical pools and opaque jobs. Select placement separately
+with `--execution-profile FILE`; local and fixed remote endpoints use configured
+zero-cost workers. RPOF profiles are declaration-only and fail closed on execution
+until paid safety, fulfillment, and remote dispatch are implemented. Existing
+v0.1 plans and their no-profile resume commands remain supported.
+
+See [the execution-profile contract](docs/execution-profile-v0.1.md) for the
+ownership boundary, examples, CLI, and resume rules.
+
 ## Requirements
 
 - Ruby 4.0.x

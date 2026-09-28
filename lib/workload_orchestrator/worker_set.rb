@@ -26,8 +26,20 @@ module WorkloadOrchestrator
     end
 
     def validate_plan!(plan)
+      if plan.logical? && !plan.execution_profile
+        raise Error, "logical plan requires --execution-profile FILE"
+      end
+      plan.execution_profile&.ensure_runnable!
       plan.pools.each { |pool| validate_pool!(pool) }
       plan
+    end
+
+    def execution_sha256(plan)
+      rows = plan.pools.flat_map(&:worker_names).uniq.sort.map do |name|
+        worker = fetch(name)
+        [name, worker.type, worker.base_url, worker.labels.sort, worker.hourly_rate_usd, worker.job_env.sort]
+      end
+      Digest::SHA256.hexdigest(JSON.generate(rows))
     end
 
     private

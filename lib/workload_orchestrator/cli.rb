@@ -43,8 +43,10 @@ module WorkloadOrchestrator
     end
 
     def validate_command
-      plan = load_plan(required_argument!("PLAN.json"))
+      plan_path = required_argument!("PLAN.json")
+      options = parse_profile_options
       reject_extra_arguments!
+      plan = load_bound_plan(plan_path, options)
       @out.puts "VALID #{plan.id} #{plan.sha256}"
       0
     end
@@ -53,7 +55,15 @@ module WorkloadOrchestrator
       plan_path = required_argument!("PLAN.json")
       options = parse_runtime_options(require_output: false)
       reject_extra_arguments!
-      plan = load_plan(plan_path)
+      plan = load_bound_plan(plan_path, options)
+      if plan.execution_profile&.rpof?
+        @out.puts "Plan: #{plan.id} (#{plan.sha256})"
+        @out.puts "Execution profile: #{plan.execution_profile.sha256}"
+        @out.puts JSON.pretty_generate(plan.execution_profile.document)
+        @out.puts "Execution: BLOCKED — RPOF safety/fulfillment/dispatch are not implemented"
+        require_workdir(options)
+        return 0
+      end
       workers = load_workers(options)
       workers.validate_plan!(plan)
       workdir = require_workdir(options)
@@ -65,7 +75,8 @@ module WorkloadOrchestrator
       plan_path = required_argument!("PLAN.json")
       options = parse_worker_options
       reject_extra_arguments!
-      plan = load_plan(plan_path)
+      plan = load_bound_plan(plan_path, options)
+      plan.execution_profile&.ensure_runnable!
       workers = load_workers(options)
       results = WorkerCheck.new.check_plan!(plan, workers)
       results.each { |row| print_worker_result(row) }
@@ -76,7 +87,8 @@ module WorkloadOrchestrator
       plan_path = required_argument!("PLAN.json")
       options = parse_runtime_options(require_output: true, allow_acknowledge: resume)
       reject_extra_arguments!
-      plan = load_plan(plan_path)
+      plan = load_bound_plan(plan_path, options)
+      plan.execution_profile&.ensure_runnable!
       workers = load_workers(options)
       runner = Runner.new(
         plan: plan,
@@ -106,8 +118,16 @@ module WorkloadOrchestrator
       plan_path = required_argument!("PLAN.json")
       options = parse_retry_options
       reject_extra_arguments!
+      plan = load_bound_plan(plan_path, options)
+      workers_sha256 = nil
+      if plan.logical?
+        workers = load_workers(options)
+        workers.validate_plan!(plan)
+        workers_sha256 = workers.execution_sha256(plan)
+      end
       store = ExecutionStore.new(
-        plan: load_plan(plan_path), workdir: require_workdir(options), output_dir: options.fetch(:output)
+        plan: plan, workdir: require_workdir(options), output_dir: options.fetch(:output),
+        workers_sha256: workers_sha256
       )
       selected = store.retry_failed!(
         all: options.fetch(:all), job_ids: options.fetch(:jobs), reason: options.fetch(:reason),
@@ -121,6 +141,8 @@ module WorkloadOrchestrator
     def parse_retry_options
       options = { all: false, jobs: [], reason: nil, acknowledge: false }
       OptionParser.new do |opts|
+        opts.on("--workers-config FILE") { |value| options[:workers_config] = value }
+        opts.on("--execution-profile FILE") { |value| options[:execution_profile] = value }
         opts.on("--workdir DIR") { |value| options[:workdir] = value }
         opts.on("--output DIR") { |value| options[:output] = value }
         opts.on("--all") { options[:all] = true }
@@ -151,6 +173,7 @@ module WorkloadOrchestrator
         opts.on("--workdir DIR") { |value| options[:workdir] = value }
         opts.on("--output DIR") { |value| options[:output] = value }
         opts.on("--workers-config FILE") { |value| options[:workers_config] = value }
+        opts.on("--execution-profile FILE") { |value| options[:execution_profile] = value }
         opts.on("--acknowledge-circuit-breaker") { options[:acknowledge] = true } if allow_acknowledge
       end
       parser.parse!(@argv)
@@ -164,8 +187,23 @@ module WorkloadOrchestrator
       options = { workers_config: nil }
       OptionParser.new do |opts|
         opts.on("--workers-config FILE") { |value| options[:workers_config] = value }
+        opts.on("--execution-profile FILE") { |value| options[:execution_profile] = value }
       end.parse!(@argv)
       options
+    end
+
+    def parse_profile_options
+      options = {}
+      OptionParser.new do |opts|
+        opts.on("--execution-profile FILE") { |value| options[:execution_profile] = value }
+      end.parse!(@argv)
+      options
+    end
+
+    def load_bound_plan(path, options)
+      plan = load_plan(path)
+      profile = options[:execution_profile]
+      profile ? ExecutionProfile.load(profile).bind(plan) : plan
     end
 
     def load_workers(options)
@@ -178,6 +216,7 @@ module WorkloadOrchestrator
     def print_plan(plan, workers, workdir)
       @out.puts "Plan: #{plan.id}"
       @out.puts "SHA-256: #{plan.sha256}"
+      @out.puts "Execution profile: #{plan.execution_profile.sha256}" if plan.execution_profile
       @out.puts "Workdir: #{workdir}"
       @out.puts "Pools: #{plan.pools.length}"
       @out.puts "Jobs: #{plan.jobs.length}"
@@ -260,7 +299,7 @@ module WorkloadOrchestrator
         workload-orchestrator #{VERSION}
 
         Usage:
-          bin/wlo validate PLAN.json
+          bin/wlo validate PLAN.json [--execution-profile FILE]
           bin/wlo plan PLAN.json --workdir DIR [--workers-config FILE]
           bin/wlo worker-check PLAN.json [--workers-config FILE]
           bin/wlo run PLAN.json --workdir DIR --output DIR [--workers-config FILE]
@@ -270,6 +309,9 @@ module WorkloadOrchestrator
           bin/wlo retry-failed PLAN.json --workdir DIR --output DIR (--all | --job ID ...) --reason TEXT
                                [--acknowledge-circuit-breaker]
           bin/wlo --version
+
+        Logical v0.2 plans require --execution-profile FILE for plan, worker-check,
+        run, resume and retry-failed. Retry also accepts --workers-config FILE.
       HELP
       0
     end

@@ -10,7 +10,10 @@ module WorkloadOrchestrator
       @plan = plan
       @workers = workers
       @workdir = File.expand_path(workdir)
-      @store = ExecutionStore.new(output_dir: output_dir, plan: plan, workdir: @workdir)
+      @store = ExecutionStore.new(
+        output_dir: output_dir, plan: plan, workdir: @workdir,
+        workers_sha256: plan.execution_profile && workers.execution_sha256(plan)
+      )
       @worker_check = worker_check
       @out = out
       @job_positions = plan.jobs.each_with_index.to_h { |job, index| [job.id, index + 1] }.freeze

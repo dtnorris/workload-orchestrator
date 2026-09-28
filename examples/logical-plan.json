@@ -1,0 +1,25 @@
+{
+  "contract_version": "wlo-execution-plan/v0.2",
+  "plan_id": "hello-local",
+  "failure_policy": {
+    "max_consecutive_failures": 2,
+    "max_total_failures": 3
+  },
+  "pools": [
+    {
+      "pool_id": "local-pool"
+    }
+  ],
+  "jobs": [
+    {
+      "job_id": "hello-1",
+      "pool_id": "local-pool",
+      "argv": [
+        "ruby",
+        "-e",
+        "puts 'hello from WLO'"
+      ],
+      "env": {}
+    }
+  ]
+}

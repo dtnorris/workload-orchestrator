@@ -81,3 +81,13 @@ Provider-specific paid-resource lifecycle, cumulative spend enforcement, and
 remote resource creation are deliberately outside this milestone. A future paid
 integration must add independently enforced finite cost/runtime controls rather
 than weakening this boundary.
+
+
+
+## Runtime placement overlay
+
+The provider-neutral handoff is now a v0.2 logical plan plus a separate WLO
+execution profile. See [execution-profile-v0.1.md](execution-profile-v0.1.md).
+AFW emits no worker names, local-only placement labels, or concurrency in new
+plans. WLO binds placement at execution time and freezes that additional identity
+for resume. RPOF profile validation is not authorization to provision capacity.

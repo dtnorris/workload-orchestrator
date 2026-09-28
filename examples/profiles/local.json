@@ -1,0 +1,13 @@
+{
+  "contract_version": "wlo-execution-profile/v0.1",
+  "pools": [
+    {
+      "pool_id": "local-pool",
+      "backend": "local",
+      "max_concurrency": 1,
+      "worker_names": [
+        "local"
+      ]
+    }
+  ]
+}

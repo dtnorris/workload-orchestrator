@@ -1,0 +1,18 @@
+{
+  "contract_version": "wlo-execution-profile/v0.1",
+  "pools": [
+    {
+      "pool_id": "local-pool",
+      "backend": "rpof",
+      "max_concurrency": 1,
+      "min_workers": 1,
+      "desired_workers": 1,
+      "max_hourly_rate_usd": 1
+    }
+  ],
+  "budget": {
+    "max_hourly_rate_usd": 1,
+    "max_total_cost_usd": 2,
+    "max_runtime_seconds": 3600
+  }
+}

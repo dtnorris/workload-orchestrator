@@ -6,6 +6,7 @@ require "json"
 module WorkloadOrchestrator
   class Plan
     CONTRACT_VERSION = "wlo-execution-plan/v0.1"
+    LOGICAL_CONTRACT_VERSION = "wlo-execution-plan/v0.2"
     ID_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z/
     ENV_NAME_PATTERN = /\A[A-Za-z_][A-Za-z0-9_]*\z/
     DIGEST_PATTERN = /\A[0-9a-f]{64}\z/i
@@ -24,7 +25,7 @@ module WorkloadOrchestrator
     )
     Job = Struct.new(:id, :pool_id, :group_id, :argv, :env, keyword_init: true)
 
-    attr_reader :path, :bytes, :sha256, :id, :failure_policy, :pools, :jobs
+    attr_reader :path, :bytes, :sha256, :id, :failure_policy, :pools, :jobs, :contract_version
 
     def self.load(path)
       expanded = File.expand_path(path)
@@ -44,6 +45,14 @@ module WorkloadOrchestrator
       @failure_policy = parse_failure_policy(document.fetch("failure_policy"))
       @pools = parse_pools(document.fetch("pools"))
       @jobs = parse_jobs(document.fetch("jobs"), @pools)
+    end
+
+    def logical?
+      contract_version == LOGICAL_CONTRACT_VERSION
+    end
+
+    def execution_profile
+      nil
     end
 
     def pool(id)
@@ -72,10 +81,10 @@ module WorkloadOrchestrator
     end
 
     def validate_contract!(document)
-      value = document.fetch("contract_version").to_s
-      return if value == CONTRACT_VERSION
+      @contract_version = document.fetch("contract_version").to_s
+      return if [CONTRACT_VERSION, LOGICAL_CONTRACT_VERSION].include?(@contract_version)
 
-      raise Error, "execution plan contract must be #{CONTRACT_VERSION.inspect}"
+      raise Error, "unsupported execution plan contract #{@contract_version.inspect}"
     end
 
     def parse_failure_policy(value)
@@ -100,6 +109,8 @@ module WorkloadOrchestrator
 
     def parse_pool(value, index)
       data = mapping!(value, "pools[#{index}]")
+      return parse_logical_pool(data, index) if logical?
+
       validate_keys!(data, POOL_KEYS, "pools[#{index}]", optional: POOL_OPTIONAL_KEYS)
       worker_names = string_array!(data.fetch("worker_names"), "pools[#{index}].worker_names")
       concurrency = positive_integer!(data.fetch("max_concurrency"), "pools[#{index}].max_concurrency")
@@ -115,6 +126,15 @@ module WorkloadOrchestrator
         ).freeze,
         ollama_requirement: parse_requirements(data.fetch("requirements", {}), index),
         max_concurrency: concurrency
+      ).freeze
+    end
+
+    def parse_logical_pool(data, index)
+      validate_keys!(data, %w[pool_id], "pools[#{index}]", optional: POOL_OPTIONAL_KEYS)
+      Pool.new(
+        id: identifier!(data.fetch("pool_id"), "pools[#{index}].pool_id"),
+        required_labels: optional_string_array!(data.fetch("required_labels", []), "required_labels").freeze,
+        ollama_requirement: parse_requirements(data.fetch("requirements", {}), index)
       ).freeze
     end
 

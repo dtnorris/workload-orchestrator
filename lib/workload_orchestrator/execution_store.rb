@@ -14,10 +14,11 @@ module WorkloadOrchestrator
 
     attr_reader :output_dir, :plan, :workdir
 
-    def initialize(output_dir:, plan:, workdir:)
+    def initialize(output_dir:, plan:, workdir:, workers_sha256: nil)
       @output_dir = File.expand_path(output_dir)
       @plan = plan
       @workdir = File.expand_path(workdir)
+      @workers_sha256 = workers_sha256
       @mutex = Mutex.new
     end
 
@@ -29,6 +30,7 @@ module WorkloadOrchestrator
         else
           ensure_unclaimed_output!
           File.binwrite(plan_path, plan.bytes)
+          File.binwrite(profile_path, plan.execution_profile.bytes) if plan.execution_profile
           write_json(execution_path, initial_execution)
         end
         rebuild_jobs_unlocked
@@ -193,7 +195,7 @@ module WorkloadOrchestrator
     end
 
     def initial_execution
-      {
+      state = {
         "contract_version" => CONTRACT_VERSION,
         "plan_id" => plan.id,
         "plan_sha256" => plan.sha256,
@@ -210,6 +212,15 @@ module WorkloadOrchestrator
           "history" => []
         }
       }
+      if plan.execution_profile
+        state["execution_profile_sha256"] = plan.execution_profile.sha256
+        state["workers_sha256"] = @workers_sha256
+      end
+      state
+    end
+
+    def profile_path
+      File.join(output_dir, "execution-profile.json")
     end
 
     def validate_existing!
@@ -219,6 +230,15 @@ module WorkloadOrchestrator
       raise Error, "existing output belongs to a different execution identity" unless actual == expected
       raise Error, "frozen plan copy is missing from existing output" unless File.file?(plan_path)
       raise Error, "frozen plan bytes changed in existing output" unless File.binread(plan_path) == plan.bytes
+      unless state["execution_profile_sha256"] == plan.execution_profile&.sha256 &&
+             state["workers_sha256"] == @workers_sha256
+        raise Error, "existing output belongs to a different execution profile or worker binding"
+      end
+      return unless plan.execution_profile
+
+      unless File.file?(profile_path) && File.binread(profile_path) == plan.execution_profile.bytes
+        raise Error, "frozen execution profile is missing or changed in existing output"
+      end
     end
 
     def ensure_unclaimed_output!
