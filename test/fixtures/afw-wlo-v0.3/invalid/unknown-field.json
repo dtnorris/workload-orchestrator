@@ -1,0 +1,14 @@
+{
+  "contract_version": "wlo-execution-plan/v0.3",
+  "plan_id": "invalid-unknown-field",
+  "failure_policy": {"max_consecutive_failures": 2, "max_total_failures": 3},
+  "pools": [{"pool_id": "pool"}],
+  "jobs": [
+    {
+      "job_id": "job-1",
+      "pool_id": "pool",
+      "depends_on_group_ids": [],
+      "argv": ["fixture-command", "job-1"]
+    }
+  ]
+}

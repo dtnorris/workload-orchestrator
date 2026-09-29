@@ -1,0 +1,28 @@
+{
+  "contract_version": "wlo-execution-plan/v0.3",
+  "plan_id": "v03-ungrouped",
+  "failure_policy": {
+    "max_consecutive_failures": 2,
+    "max_total_failures": 3
+  },
+  "pools": [
+    {
+      "pool_id": "gemma"
+    },
+    {
+      "pool_id": "gptoss"
+    }
+  ],
+  "jobs": [
+    {
+      "job_id": "zeta",
+      "pool_id": "gemma",
+      "argv": ["fixture-command", "zeta"]
+    },
+    {
+      "job_id": "alpha",
+      "pool_id": "gptoss",
+      "argv": ["fixture-command", "alpha"]
+    }
+  ]
+}

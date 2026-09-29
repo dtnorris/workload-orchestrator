@@ -1,0 +1,45 @@
+{
+  "contract_version": "wlo-execution-plan/v0.3",
+  "plan_id": "v03-grouped",
+  "failure_policy": {
+    "max_consecutive_failures": 2,
+    "max_total_failures": 3,
+    "non_operational_exit_statuses": [42]
+  },
+  "pools": [
+    {
+      "pool_id": "qwen",
+      "required_labels": ["inference"],
+      "requirements": {
+        "ollama": {
+          "model": "qwen3.6:35b-a3b",
+          "expected_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "required_context_length": 131072,
+          "require_fully_gpu_resident": true,
+          "required_gpu_id": "NVIDIA A40"
+        }
+      }
+    }
+  ],
+  "jobs": [
+    {
+      "job_id": "group-a-1",
+      "pool_id": "qwen",
+      "group_id": "group-a",
+      "argv": ["bin/afw-score-job", "cases/group-a-1.yml"],
+      "env": {"AF_PROFILE": "production-base"}
+    },
+    {
+      "job_id": "group-b-1",
+      "pool_id": "qwen",
+      "group_id": "group-b",
+      "argv": ["bin/afw-score-job", "cases/group-b-1.yml"]
+    },
+    {
+      "job_id": "group-a-2",
+      "pool_id": "qwen",
+      "group_id": "group-a",
+      "argv": ["bin/afw-score-job", "cases/group-a-2.yml"]
+    }
+  ]
+}

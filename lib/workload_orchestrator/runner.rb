@@ -41,6 +41,10 @@ module WorkloadOrchestrator
     end
 
     def run(resume: false, acknowledge_circuit_breaker: false)
+      if plan.priority_scheduling?
+        raise Error, "wlo-execution-plan/v0.3 execution requires the DW-11 work-conserving scheduler"
+      end
+
       validate_workdir!
       workers.validate_plan!(plan) unless dynamic_workers?
       store.with_execution_lock do

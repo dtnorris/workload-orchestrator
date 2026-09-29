@@ -7,6 +7,14 @@ module WorkloadOrchestrator
   class Plan
     CONTRACT_VERSION = "wlo-execution-plan/v0.1"
     LOGICAL_CONTRACT_VERSION = "wlo-execution-plan/v0.2"
+    PRIORITY_CONTRACT_VERSION = "wlo-execution-plan/v0.3"
+    LOGICAL_CONTRACT_VERSIONS = [LOGICAL_CONTRACT_VERSION, PRIORITY_CONTRACT_VERSION].freeze
+    SUPPORTED_CONTRACT_VERSIONS = [CONTRACT_VERSION, *LOGICAL_CONTRACT_VERSIONS].freeze
+    LEGACY_SCHEDULING = :legacy
+    WORK_CONSERVING_PRIORITY_SCHEDULING = :work_conserving_priority
+    NO_GROUP_SEMANTICS = :none
+    HARD_GROUP_BARRIER = :hard_barrier
+    PRIORITY_ONLY_GROUPS = :priority_only
     ID_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z/
     ENV_NAME_PATTERN = /\A[A-Za-z_][A-Za-z0-9_]*\z/
     DIGEST_PATTERN = /\A[0-9a-f]{64}\z/i
@@ -15,6 +23,7 @@ module WorkloadOrchestrator
     POOL_OPTIONAL_KEYS = %w[required_labels requirements].freeze
     JOB_KEYS = %w[job_id pool_id argv].freeze
     JOB_OPTIONAL_KEYS = %w[env group_id].freeze
+    PRIORITY_JOB_OPTIONAL_KEYS = %w[depends_on_job_ids].freeze
     FAILURE_KEYS = %w[max_consecutive_failures max_total_failures].freeze
     FAILURE_OPTIONAL_KEYS = %w[non_operational_exit_statuses].freeze
     REQUIREMENT_KEYS = %w[ollama].freeze
@@ -25,7 +34,10 @@ module WorkloadOrchestrator
       :id, :worker_names, :required_labels, :ollama_requirement, :max_concurrency,
       keyword_init: true
     )
-    Job = Struct.new(:id, :pool_id, :group_id, :argv, :env, keyword_init: true)
+    Job = Struct.new(
+      :id, :pool_id, :group_id, :argv, :env, :depends_on_job_ids, :priority_key,
+      keyword_init: true
+    )
 
     attr_reader :path, :bytes, :sha256, :id, :failure_policy, :pools, :jobs, :contract_version
 
@@ -50,7 +62,33 @@ module WorkloadOrchestrator
     end
 
     def logical?
-      contract_version == LOGICAL_CONTRACT_VERSION
+      LOGICAL_CONTRACT_VERSIONS.include?(contract_version)
+    end
+
+    def priority_scheduling?
+      contract_version == PRIORITY_CONTRACT_VERSION
+    end
+
+    def scheduling_semantics
+      priority_scheduling? ? WORK_CONSERVING_PRIORITY_SCHEDULING : LEGACY_SCHEDULING
+    end
+
+    def group_semantics
+      return NO_GROUP_SEMANTICS unless grouped_jobs?
+
+      priority_scheduling? ? PRIORITY_ONLY_GROUPS : HARD_GROUP_BARRIER
+    end
+
+    def job_priority_key(job_or_id)
+      unless priority_scheduling?
+        raise Error, "deterministic job priority keys are defined only for wlo-execution-plan/v0.3"
+      end
+
+      id = job_or_id.respond_to?(:id) ? job_or_id.id : job_or_id.to_s
+      job = jobs.find { |candidate| candidate.id == id }
+      raise Error, "unknown job_id #{id.inspect}" unless job
+
+      job.priority_key
     end
 
     def execution_profile
@@ -84,7 +122,7 @@ module WorkloadOrchestrator
 
     def validate_contract!(document)
       @contract_version = document.fetch("contract_version").to_s
-      return if [CONTRACT_VERSION, LOGICAL_CONTRACT_VERSION].include?(@contract_version)
+      return if SUPPORTED_CONTRACT_VERSIONS.include?(@contract_version)
 
       raise Error, "unsupported execution plan contract #{@contract_version.inspect}"
     end
@@ -192,12 +230,16 @@ module WorkloadOrchestrator
         raise Error, "jobs must either all define group_id or all omit it"
       end
 
-      jobs.freeze
+      validate_dependencies!(jobs) if priority_scheduling?
+      assign_priority_keys!(jobs) if priority_scheduling?
+
+      jobs.each(&:freeze).freeze
     end
 
     def parse_job(value, index, pool_ids)
       data = mapping!(value, "jobs[#{index}]")
-      validate_keys!(data, JOB_KEYS, "jobs[#{index}]", optional: JOB_OPTIONAL_KEYS)
+      optional = JOB_OPTIONAL_KEYS + (priority_scheduling? ? PRIORITY_JOB_OPTIONAL_KEYS : [])
+      validate_keys!(data, JOB_KEYS, "jobs[#{index}]", optional: optional)
       pool_id = identifier!(data.fetch("pool_id"), "jobs[#{index}].pool_id")
       raise Error, "jobs[#{index}] references unknown pool #{pool_id.inspect}" unless pool_ids.include?(pool_id)
 
@@ -206,8 +248,58 @@ module WorkloadOrchestrator
         pool_id: pool_id,
         group_id: data.key?("group_id") ? identifier!(data.fetch("group_id"), "jobs[#{index}].group_id") : nil,
         argv: string_array!(data.fetch("argv"), "jobs[#{index}].argv").freeze,
-        env: environment!(data.fetch("env", {}), "jobs[#{index}].env").freeze
-      ).freeze
+        env: environment!(data.fetch("env", {}), "jobs[#{index}].env").freeze,
+        depends_on_job_ids: dependency_ids!(
+          data.fetch("depends_on_job_ids", []), "jobs[#{index}].depends_on_job_ids"
+        ).freeze
+      )
+    end
+
+    def dependency_ids!(value, label)
+      raise Error, "#{label} must be an array" unless value.is_a?(Array)
+
+      ids = value.map.with_index { |item, index| identifier!(item, "#{label}[#{index}]") }
+      duplicate = duplicate_value(ids)
+      raise Error, "#{label} contains duplicate job_id #{duplicate.inspect}" if duplicate
+
+      ids
+    end
+
+    def validate_dependencies!(jobs)
+      all_ids = jobs.map(&:id)
+      earlier_ids = []
+      jobs.each_with_index do |job, index|
+        job.depends_on_job_ids.each do |dependency_id|
+          if dependency_id == job.id
+            raise Error, "jobs[#{index}] cannot depend on itself"
+          end
+          unless all_ids.include?(dependency_id)
+            raise Error, "jobs[#{index}] references unknown dependency #{dependency_id.inspect}"
+          end
+          unless earlier_ids.include?(dependency_id)
+            raise Error, "jobs[#{index}] dependency #{dependency_id.inspect} must appear earlier in jobs"
+          end
+        end
+        earlier_ids << job.id
+      end
+    end
+
+    def assign_priority_keys!(jobs)
+      if grouped_jobs_for?(jobs)
+        group_ranks = {}
+        group_positions = Hash.new(0)
+        jobs.each do |job|
+          group_ranks[job.group_id] ||= group_ranks.length
+          job.priority_key = [group_ranks.fetch(job.group_id), group_positions[job.group_id], job.id].freeze
+          group_positions[job.group_id] += 1
+        end
+      else
+        jobs.each_with_index { |job, index| job.priority_key = [0, index, job.id].freeze }
+      end
+    end
+
+    def grouped_jobs_for?(rows)
+      !rows.empty? && !rows.first.group_id.nil?
     end
 
     def environment!(value, label)

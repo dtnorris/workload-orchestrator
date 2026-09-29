@@ -316,7 +316,10 @@ module WorkloadOrchestrator
       @out.puts "Workdir: #{workdir}"
       @out.puts "Pools: #{plan.pools.length}"
       @out.puts "Jobs: #{plan.jobs.length}"
-      if plan.grouped_jobs?
+      if plan.priority_scheduling?
+        detail = plan.grouped_jobs? ? " (#{plan.job_groups.length} reporting groups)" : ""
+        @out.puts "Scheduling: work-conserving priority#{detail}"
+      elsif plan.grouped_jobs?
         @out.puts "Scheduling: group-major (#{plan.job_groups.length} groups)"
       else
         @out.puts "Scheduling: pool-major (legacy)"

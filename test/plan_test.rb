@@ -68,6 +68,8 @@ class PlanTest < Minitest::Test
     )
     plan = WorkloadOrchestrator::Plan.load(grouped)
     assert plan.grouped_jobs?
+    assert_equal WorkloadOrchestrator::Plan::LEGACY_SCHEDULING, plan.scheduling_semantics
+    assert_equal WorkloadOrchestrator::Plan::HARD_GROUP_BARRIER, plan.group_semantics
     assert_equal([%w[a-1 a-2]], plan.job_groups.map { |rows| rows.map(&:id) })
 
     mixed = write_plan(

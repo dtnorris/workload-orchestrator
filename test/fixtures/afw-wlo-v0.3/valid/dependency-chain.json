@@ -1,0 +1,35 @@
+{
+  "contract_version": "wlo-execution-plan/v0.3",
+  "plan_id": "v03-dependency-chain",
+  "failure_policy": {
+    "max_consecutive_failures": 2,
+    "max_total_failures": 3
+  },
+  "pools": [
+    {
+      "pool_id": "serial"
+    }
+  ],
+  "jobs": [
+    {
+      "job_id": "step-1",
+      "pool_id": "serial",
+      "group_id": "reporting-group",
+      "argv": ["fixture-command", "step-1"]
+    },
+    {
+      "job_id": "step-2",
+      "pool_id": "serial",
+      "group_id": "reporting-group",
+      "depends_on_job_ids": ["step-1"],
+      "argv": ["fixture-command", "step-2"]
+    },
+    {
+      "job_id": "step-3",
+      "pool_id": "serial",
+      "group_id": "reporting-group",
+      "depends_on_job_ids": ["step-2"],
+      "argv": ["fixture-command", "step-3"]
+    }
+  ]
+}

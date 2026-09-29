@@ -24,7 +24,7 @@ class AfwWloContractTest < Minitest::Test
   def test_incompatible_versions_shapes_and_scalar_types_fail_closed
     base = JSON.parse(File.read(FIXTURE))
     variants = {
-      "version" => ->(row) { row["contract_version"] = "wlo-execution-plan/v0.3" },
+      "version" => ->(row) { row["contract_version"] = "wlo-execution-plan/v0.4" },
       "missing plan ID" => ->(row) { row.delete("plan_id") },
       "null plan ID" => ->(row) { row["plan_id"] = nil },
       "numeric plan ID" => ->(row) { row["plan_id"] = 7 },

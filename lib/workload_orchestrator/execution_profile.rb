@@ -73,7 +73,7 @@ module WorkloadOrchestrator
 
     def bind(plan)
       unless plan.logical? && !plan.execution_profile
-        raise Error, "execution profiles require an unbound wlo-execution-plan/v0.2 plan"
+        raise Error, "execution profiles require an unbound wlo-execution-plan/v0.2 or v0.3 plan"
       end
       rows = document.fetch("pools").to_h { |row| [row.fetch("pool_id"), row] }
       unless rows.keys.sort == plan.pools.map(&:id).sort
