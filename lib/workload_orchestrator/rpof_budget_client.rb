@@ -69,17 +69,24 @@ module WorkloadOrchestrator
     end
 
     def capture_budget(arguments)
-      Open3.popen3([@executable, @executable], "budget", *arguments, pgroup: true) do |input, output, error, waiter|
+      capture_process(["budget", *arguments], timeout_seconds: @timeout_seconds)
+    end
+
+    def capture_process(arguments, timeout_seconds:)
+      unless timeout_seconds.is_a?(Numeric) && timeout_seconds.finite? && timeout_seconds.positive?
+        raise Error, "RPOF command timeout must be positive and finite"
+      end
+      Open3.popen3([@executable, @executable], *arguments, pgroup: true) do |input, output, error, waiter|
         input.close
         readers = [output, error].map { |io| Thread.new { io.read } }
-        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @timeout_seconds
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
         begin
-          unless waiter.join(@timeout_seconds)
-            raise Error, "RPOF budget command timed out; outcome unknown, independent guardian remains enabled"
+          unless waiter.join(timeout_seconds)
+            raise Error, "RPOF command timed out; outcome unknown, independent guardian remains enabled"
           end
           readers.each do |reader|
             remaining = [deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max
-            raise Error, "RPOF budget output timed out" unless reader.join(remaining)
+            raise Error, "RPOF output timed out" unless reader.join(remaining)
           end
           [readers[0].value, readers[1].value, waiter.value]
         ensure

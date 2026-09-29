@@ -59,6 +59,16 @@ module WorkloadOrchestrator
       end
     end
 
+    # Capacity mutations must use the same provider client and frozen budget
+    # whose guardian/heartbeat lifecycle is active. A check is not a reservation.
+    def check_for!(budget:, client:)
+      unless @client.equal?(client) && @budget.document == budget.document &&
+             @budget.execution_profile_sha256 == budget.execution_profile_sha256
+        raise Error, "fulfillment client/budget differs from active lifecycle"
+      end
+      check!
+    end
+
     def finish!(reason:)
       stop_heartbeat
       return true unless @started && @lock

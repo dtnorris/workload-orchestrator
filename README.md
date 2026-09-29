@@ -220,3 +220,11 @@ The [paid-budget contract](docs/paid-budget-v0.1.md) provides explicit finite
 limits, durable execution binding, and lifecycle coordination with RPOF's
 independent guardian. This library foundation does not enable paid execution;
 the nonzero-cost-worker and RPOF-profile execution blocks remain in place.
+
+## Execution-pool fulfillment
+
+The [step 6 capacity API](docs/execution-pool-fulfillment-v0.1.md) joins logical
+model requirements with WLO worker counts and cost ceilings. Explicitly authorized
+library callers can obtain ready RPOF capacity inside a guarded budget scope;
+scope exit requests teardown. The adapter preserves RPOF's independent guardian.
+This does not yet connect paid capacity to the WLO job runner.
