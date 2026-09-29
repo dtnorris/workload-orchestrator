@@ -1,0 +1,199 @@
+# Per-file coverage floors. A file that drops below its floor fails the run,
+# and files with no entry fall through to the global per-file minimum.
+# Regenerate with `simplecov ratchet`. Floors only ever tighten.
+lib/workload_orchestrator.rb:
+  lines:
+    percent: 100.0
+    missed: 0
+  branches:
+    percent: 100.0
+    missed: 0
+lib/workload_orchestrator/cli.rb:
+  lines:
+    percent: 90.0
+    missed: 24
+  branches:
+    percent: 69.89
+    missed: 28
+lib/workload_orchestrator/config.rb:
+  lines:
+    percent: 55.55
+    missed: 8
+  branches:
+    percent: 0.0
+    missed: 4
+lib/workload_orchestrator/detached_manager.rb:
+  lines:
+    percent: 38.7
+    missed: 38
+  branches:
+    percent: 30.0
+    missed: 21
+lib/workload_orchestrator/error.rb:
+  lines:
+    percent: 100.0
+    missed: 0
+  branches:
+    percent: 100.0
+    missed: 0
+lib/workload_orchestrator/execution_pool_plan.rb:
+  lines:
+    percent: 93.44
+    missed: 4
+  branches:
+    percent: 78.26
+    missed: 5
+lib/workload_orchestrator/execution_profile.rb:
+  lines:
+    percent: 94.06
+    missed: 7
+  branches:
+    percent: 80.76
+    missed: 10
+lib/workload_orchestrator/execution_report.rb:
+  lines:
+    percent: 97.36
+    missed: 2
+  branches:
+    percent: 86.84
+    missed: 5
+lib/workload_orchestrator/execution_retry.rb:
+  lines:
+    percent: 94.18
+    missed: 5
+  branches:
+    percent: 83.33
+    missed: 7
+lib/workload_orchestrator/execution_store.rb:
+  lines:
+    percent: 97.67
+    missed: 6
+  branches:
+    percent: 85.1
+    missed: 14
+lib/workload_orchestrator/job_claim.rb:
+  lines:
+    percent: 100.0
+    missed: 0
+  branches:
+    percent: 50.0
+    missed: 1
+lib/workload_orchestrator/paid_budget.rb:
+  lines:
+    percent: 98.91
+    missed: 1
+  branches:
+    percent: 95.23
+    missed: 2
+lib/workload_orchestrator/paid_budget_lifecycle.rb:
+  lines:
+    percent: 98.44
+    missed: 2
+  branches:
+    percent: 86.48
+    missed: 5
+lib/workload_orchestrator/plan.rb:
+  lines:
+    percent: 96.87
+    missed: 5
+  branches:
+    percent: 75.0
+    missed: 15
+lib/workload_orchestrator/pool_fulfillment.rb:
+  lines:
+    percent: 90.94
+    missed: 21
+  branches:
+    percent: 71.05
+    missed: 33
+lib/workload_orchestrator/rpof_budget_client.rb:
+  lines:
+    percent: 95.38
+    missed: 3
+  branches:
+    percent: 75.0
+    missed: 5
+lib/workload_orchestrator/rpof_capacity_client.rb:
+  lines:
+    percent: 89.02
+    missed: 9
+  branches:
+    percent: 76.19
+    missed: 10
+lib/workload_orchestrator/rpof_client.rb:
+  lines:
+    percent: 92.1
+    missed: 9
+  branches:
+    percent: 63.82
+    missed: 17
+lib/workload_orchestrator/rpof_contract.rb:
+  lines:
+    percent: 98.7
+    missed: 1
+  branches:
+    percent: 84.84
+    missed: 5
+lib/workload_orchestrator/rpof_contract_values.rb:
+  lines:
+    percent: 100.0
+    missed: 0
+  branches:
+    percent: 93.75
+    missed: 1
+lib/workload_orchestrator/rpof_dispatch_validation.rb:
+  lines:
+    percent: 92.0
+    missed: 4
+  branches:
+    percent: 79.16
+    missed: 5
+lib/workload_orchestrator/rpof_readiness.rb:
+  lines:
+    percent: 98.48
+    missed: 1
+  branches:
+    percent: 96.66
+    missed: 1
+lib/workload_orchestrator/runner.rb:
+  lines:
+    percent: 96.38
+    missed: 10
+  branches:
+    percent: 79.83
+    missed: 24
+lib/workload_orchestrator/version.rb:
+  lines:
+    percent: 100.0
+    missed: 0
+  branches:
+    percent: 100.0
+    missed: 0
+lib/workload_orchestrator/worker.rb:
+  lines:
+    percent: 88.88
+    missed: 4
+  branches:
+    percent: 58.33
+    missed: 5
+lib/workload_orchestrator/worker_admission_policy.rb:
+  lines:
+    percent: 100.0
+    missed: 0
+  branches:
+    percent: 100.0
+    missed: 0
+lib/workload_orchestrator/worker_check.rb:
+  lines:
+    percent: 85.88
+    missed: 12
+  branches:
+    percent: 71.87
+    missed: 9
+lib/workload_orchestrator/worker_set.rb:
+  lines:
+    percent: 98.0
+    missed: 1
+  branches:
+    percent: 85.0
+    missed: 3
