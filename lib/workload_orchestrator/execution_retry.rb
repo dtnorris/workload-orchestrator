@@ -96,7 +96,7 @@ module WorkloadOrchestrator
 
       relative = File.join("attempts", job.id, "attempt-#{attempt}")
       destination = File.join(output_dir, relative)
-      names = (%w[metadata.json stdout.log stderr.log] + ["provider-attempt-#{attempt}"]).select do |name|
+      names = (%w[metadata.json stdout.log stderr.log import-source] + ["provider-attempt-#{attempt}"]).select do |name|
         File.exist?(File.join(run_dir(job), name))
       end
       if File.exist?(destination)

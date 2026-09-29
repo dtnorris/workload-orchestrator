@@ -16,6 +16,7 @@ module WorkloadOrchestrator
     JOB_KEYS = %w[job_id pool_id argv].freeze
     JOB_OPTIONAL_KEYS = %w[env group_id].freeze
     FAILURE_KEYS = %w[max_consecutive_failures max_total_failures].freeze
+    FAILURE_OPTIONAL_KEYS = %w[non_operational_exit_statuses].freeze
     REQUIREMENT_KEYS = %w[ollama].freeze
     OLLAMA_KEYS = %w[model expected_digest].freeze
     OLLAMA_CAPABILITY_KEYS = %w[required_context_length require_fully_gpu_resident required_gpu_id].freeze
@@ -90,12 +91,18 @@ module WorkloadOrchestrator
 
     def parse_failure_policy(value)
       data = mapping!(value, "failure_policy")
-      validate_keys!(data, FAILURE_KEYS, "failure_policy")
+      validate_keys!(data, FAILURE_KEYS, "failure_policy", optional: FAILURE_OPTIONAL_KEYS)
+      excluded = data.fetch("non_operational_exit_statuses", [])
+      unless excluded.is_a?(Array) && excluded.all? { |code| code.is_a?(Integer) && (1..255).cover?(code) } &&
+             excluded.uniq == excluded
+        raise Error, "non_operational_exit_statuses must be distinct nonzero process exit statuses (1..255)"
+      end
       {
         "max_consecutive_failures" => positive_integer!(
           data.fetch("max_consecutive_failures"), "max_consecutive_failures"
         ),
-        "max_total_failures" => positive_integer!(data.fetch("max_total_failures"), "max_total_failures")
+        "max_total_failures" => positive_integer!(data.fetch("max_total_failures"), "max_total_failures"),
+        "non_operational_exit_statuses" => excluded.freeze
       }
     end
 

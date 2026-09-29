@@ -22,6 +22,20 @@ class PlanTest < Minitest::Test
     assert_equal ["local-pool"], plan.pools.map(&:id)
     assert_equal ["job-1"], plan.jobs.map(&:id)
     assert_equal 2, plan.failure_policy.fetch("max_consecutive_failures")
+    assert_equal [], plan.failure_policy.fetch("non_operational_exit_statuses")
+  end
+
+  def test_failure_classification_exit_statuses_are_strict_and_nonzero
+    jobs = [job("one", code: "exit 42")]
+    base = { "max_consecutive_failures" => 2, "max_total_failures" => 3 }
+    [0, -1, 256, "42", nil, 42.0].each do |invalid|
+      path = write_plan(@tmp, jobs: jobs, failure_policy: base.merge("non_operational_exit_statuses" => [invalid]))
+      assert_raises(WorkloadOrchestrator::Error) { WorkloadOrchestrator::Plan.load(path) }
+    end
+    path = write_plan(@tmp, jobs: jobs, failure_policy: base.merge("non_operational_exit_statuses" => [42, 42]))
+    assert_raises(WorkloadOrchestrator::Error) { WorkloadOrchestrator::Plan.load(path) }
+    path = write_plan(@tmp, jobs: jobs, failure_policy: base.merge("non_operational_exit_statuses" => [42]))
+    assert_equal [42], WorkloadOrchestrator::Plan.load(path).failure_policy.fetch("non_operational_exit_statuses")
   end
 
   def test_rejects_unknown_fields_and_duplicate_job_ids

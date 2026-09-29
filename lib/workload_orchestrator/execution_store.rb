@@ -4,10 +4,12 @@ require "fileutils"
 require "json"
 require "time"
 require_relative "execution_retry"
+require_relative "terminal_import_state"
 
 module WorkloadOrchestrator
   class ExecutionStore
     include ExecutionRetry
+    include TerminalImportState
 
     CONTRACT_VERSION = "wlo-execution-state/v0.1"
     TERMINAL_JOB_STATUSES = %w[complete failed].freeze
@@ -22,11 +24,11 @@ module WorkloadOrchestrator
       @mutex = Mutex.new
     end
 
-    def prepare!
+    def prepare!(allow_incomplete_import: false)
       FileUtils.mkdir_p(output_dir)
       with_lock do
         if File.file?(execution_path)
-          validate_existing!
+          validate_existing!(allow_incomplete_import: allow_incomplete_import)
         else
           ensure_unclaimed_output!
           File.binwrite(plan_path, plan.bytes)
@@ -181,8 +183,11 @@ module WorkloadOrchestrator
       Time.now
     end
 
-    def record_terminal!(job:, status:, started_at:, exit_status:, error: nil, evidence: nil)
+    def record_terminal!(job:, status:, started_at:, exit_status:, error: nil, evidence: nil, failure_class: nil)
       raise Error, "invalid terminal status #{status.inspect}" unless TERMINAL_JOB_STATUSES.include?(status)
+      unless failure_class.nil? || status == "failed" && TerminalImport::CLASSES.include?(failure_class)
+        raise Error, "invalid failure class #{failure_class.inspect}"
+      end
 
       document = metadata_for(job) || {}
       completed_at = Time.now
@@ -192,10 +197,13 @@ module WorkloadOrchestrator
         "elapsed_seconds" => (completed_at - started_at).round(3),
         "exit_status" => exit_status
       )
+      classification = failure_class || (status == "failed" && plan.failure_policy.fetch("non_operational_exit_statuses").include?(exit_status) ?
+        "non_operational" : "operational")
+      document["failure_class"] = status == "failed" ? classification : nil
       document["error"] = error if error
       document["evidence"] = evidence if evidence
       write_json(metadata_path(job), document)
-      record_breaker_result!(status)
+      record_breaker_result!(status, classification)
       rebuild_jobs!
     end
 
@@ -296,7 +304,7 @@ module WorkloadOrchestrator
       File.join(output_dir, "execution-profile.json")
     end
 
-    def validate_existing!
+    def validate_existing!(allow_incomplete_import: false)
       state = read_json(execution_path, "execution state")
       expected = [CONTRACT_VERSION, plan.id, plan.sha256, workdir]
       actual = [state["contract_version"], state["plan_id"], state["plan_sha256"], state["workdir"]]
@@ -307,10 +315,14 @@ module WorkloadOrchestrator
              state["workers_sha256"] == @workers_sha256
         raise Error, "existing output belongs to a different execution profile or worker binding"
       end
-      return unless plan.execution_profile
-
-      unless File.file?(profile_path) && File.binread(profile_path) == plan.execution_profile.bytes
+      if plan.execution_profile &&
+         (!File.file?(profile_path) || File.binread(profile_path) != plan.execution_profile.bytes)
         raise Error, "frozen execution profile is missing or changed in existing output"
+      end
+      marker = state["terminal_import"]
+      if marker
+        raise Error, "terminal import is incomplete; repeat the same import" if marker["phase"] != "complete" && !allow_incomplete_import
+        validate_terminal_import!(state) if marker["phase"] == "complete"
       end
     end
 
@@ -321,19 +333,20 @@ module WorkloadOrchestrator
       raise Error, "output directory is not empty and has no WLO execution state: #{output_dir}"
     end
 
-    def record_breaker_result!(job_status)
+    def record_breaker_result!(job_status, classification)
       update_execution do |state|
         breaker = state.fetch("circuit_breaker")
         next if breaker.fetch("tripped")
 
-        update_breaker_counters!(breaker, job_status)
+        update_breaker_counters!(breaker, job_status, classification)
         trip_breaker!(breaker) if breaker_reason(breaker)
       end
     end
 
-    def update_breaker_counters!(breaker, job_status)
+    def update_breaker_counters!(breaker, job_status, classification)
       if job_status == "failed"
-        breaker["consecutive_failures"] = Integer(breaker.fetch("consecutive_failures")) + 1
+        breaker["consecutive_failures"] = classification == "non_operational" ? 0 :
+          Integer(breaker.fetch("consecutive_failures")) + 1
         breaker["total_failures"] = Integer(breaker.fetch("total_failures")) + 1
       else
         breaker["consecutive_failures"] = 0
@@ -402,7 +415,8 @@ module WorkloadOrchestrator
           "status" => metadata ? metadata.fetch("status") : "pending",
           "attempt" => metadata && metadata["attempt"],
           "worker" => metadata && metadata["worker"],
-          "exit_status" => metadata && metadata["exit_status"]
+          "exit_status" => metadata && metadata["exit_status"],
+          "failure_class" => metadata && metadata["failure_class"]
         }
       end
       write_json(File.join(output_dir, "jobs.json"), { "jobs" => rows })

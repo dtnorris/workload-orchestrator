@@ -58,6 +58,8 @@ module WorkloadOrchestrator
 
       check_workers!
       validate_remote_jobs!
+      counts = store.counts
+      return finalize_and_report(resource_cleanup_pending: false) if (counts["pending"] + counts["running"]).zero?
       return run_with_capacity(resume) if rpof?
 
       store.start!
@@ -327,7 +329,8 @@ module WorkloadOrchestrator
         detail = "RPOF dispatch #{result.document.fetch('status')}"
         store.record_terminal!(job: job, status: "failed", started_at: started_at,
                                exit_status: row && row["exit_status"], error: detail,
-                               evidence: remote_evidence(result, output).merge("kind" => "infrastructure"))
+                               evidence: remote_evidence(result, output).merge("kind" => "infrastructure"),
+                               failure_class: "operational")
         halt_remote_dispatch!(job, "remote_infrastructure", detail)
       end
     end
@@ -454,8 +457,8 @@ module WorkloadOrchestrator
       end
     end
 
-    def finalize_and_report
-      status = store.finish!(resource_cleanup_pending: rpof?)
+    def finalize_and_report(resource_cleanup_pending: rpof?)
+      status = store.finish!(resource_cleanup_pending: resource_cleanup_pending)
       counts = store.counts
       @out.puts "Execution: #{status}"
       @out.puts "Jobs: #{format_counts(counts)}"

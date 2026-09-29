@@ -6,6 +6,9 @@ Contract version:
 wlo-execution-plan/v0.1
 ```
 
+The optional `failure_policy.non_operational_exit_statuses` and the separate
+terminal handoff command are specified in [terminal-import-v0.1.md](terminal-import-v0.1.md).
+
 The exact serialized JSON bytes are immutable execution intent. WLO calculates
 SHA-256 over those bytes and binds an output directory to the tuple:
 

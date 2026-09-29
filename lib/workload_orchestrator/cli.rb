@@ -37,6 +37,7 @@ module WorkloadOrchestrator
       when "run" then run_command(resume: false)
       when "resume" then run_command(resume: true)
       when "retry-failed" then retry_failed_command
+      when "import-terminal" then import_terminal_command
       when "status" then status_command
       when "summary" then status_command(human: true)
       when "pause" then pause_command
@@ -159,6 +160,39 @@ module WorkloadOrchestrator
       @out.puts "Retry queued: #{selected.join(', ')}"
       @out.puts "Execution remains paused. Resume the same plan, workdir and output to run pending jobs."
       0
+    end
+
+    def import_terminal_command
+      plan_path = required_argument!("PLAN.json")
+      handoff_path = required_argument!("HANDOFF.json")
+      options = parse_import_options
+      reject_extra_arguments!
+      plan = load_bound_plan(plan_path, options)
+      workers = load_workers_for_plan(options, plan)
+      workers.validate_plan!(plan)
+      store = ExecutionStore.new(
+        plan: plan, workdir: require_workdir(options), output_dir: options.fetch(:output),
+        workers_sha256: plan.logical? ? workers.execution_sha256(plan) : nil
+      )
+      count = store.import_terminal!(bytes: File.binread(File.expand_path(handoff_path)))
+      @out.puts "Imported #{count} terminal jobs into #{store.output_dir}; no commands executed."
+      0
+    rescue SystemCallError => e
+      raise Error, "cannot read terminal handoff: #{e.message}"
+    end
+
+    def parse_import_options
+      options = {}
+      OptionParser.new do |opts|
+        opts.on("--workers-config FILE") { |value| options[:workers_config] = value }
+        opts.on("--execution-profile FILE") { |value| options[:execution_profile] = value }
+        opts.on("--workdir DIR") { |value| options[:workdir] = value }
+        opts.on("--output DIR") { |value| options[:output] = value }
+      end.parse!(@argv)
+      %i[workdir output].each do |key|
+        raise OptionParser::MissingArgument, "--#{key}" if options[key].to_s.empty?
+      end
+      options
     end
 
     def parse_retry_options
@@ -364,6 +398,8 @@ module WorkloadOrchestrator
                          [--execution-profile FILE --rpof-executable FILE --paid-budget FILE --authorize-paid-rpof]
           bin/wlo retry-failed PLAN.json --workdir DIR --output DIR (--all | --job ID ...) --reason TEXT
                                [--acknowledge-circuit-breaker]
+          bin/wlo import-terminal PLAN.json HANDOFF.json --workdir DIR --output DIR
+                                  [--workers-config FILE] [--execution-profile FILE]
           bin/wlo --version
 
         Logical v0.2 plans require --execution-profile FILE for plan, worker-check,
