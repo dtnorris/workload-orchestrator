@@ -257,6 +257,9 @@ module WorkloadOrchestrator
     end
 
     def non_empty_string!(value, label)
+      if logical? && !value.is_a?(String)
+        raise Error, "#{label} must be a non-empty string"
+      end
       text = value.to_s
       raise Error, "#{label} must be a non-empty string" if text.empty?
 
@@ -271,6 +274,9 @@ module WorkloadOrchestrator
     end
 
     def positive_integer!(value, label)
+      if logical? && !value.is_a?(Integer)
+        raise Error, "#{label} must be a positive integer"
+      end
       number = Integer(value)
       raise ArgumentError unless number.positive?
 

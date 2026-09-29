@@ -1,0 +1,44 @@
+{
+  "contract_version": "wlo-execution-plan/v0.2",
+  "plan_id": "afw-contract-fixture",
+  "failure_policy": {
+    "max_consecutive_failures": 2,
+    "max_total_failures": 3,
+    "non_operational_exit_statuses": [42]
+  },
+  "pools": [
+    {
+      "pool_id": "qwen",
+      "requirements": {
+        "ollama": {
+          "model": "qualified-model:latest",
+          "expected_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "required_context_length": 131072,
+          "require_fully_gpu_resident": true
+        }
+      }
+    }
+  ],
+  "jobs": [
+    {
+      "job_id": "case-1",
+      "pool_id": "qwen",
+      "group_id": "ADV-0001",
+      "argv": ["bin/afw-score-job", "build/workloads/example/cases/first.yml"],
+      "env": {"AF_LLM_MAX_TOKENS": "8192"}
+    },
+    {
+      "job_id": "case-2",
+      "pool_id": "qwen",
+      "group_id": "ADV-0001",
+      "argv": ["bin/afw-score-job", "build/workloads/example/cases/second.yml"],
+      "env": {}
+    },
+    {
+      "job_id": "case-3",
+      "pool_id": "qwen",
+      "group_id": "ADV-0002",
+      "argv": ["bin/afw-score-job", "build/workloads/example/cases/third.yml"]
+    }
+  ]
+}
