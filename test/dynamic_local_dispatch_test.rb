@@ -8,6 +8,14 @@ class DynamicLocalDispatchTest < Minitest::Test
 
   NOW = Time.iso8601("2030-01-01T00:01:00Z")
   FIXTURE = File.expand_path("fixtures/dynamic-worker-registry-v0.1.json", __dir__)
+  AFW_CONTROL_NAMES = %w[
+    AF_CATALOG_ROLE AF_CATALOG_WORKBOOK AF_INVESTIGATION_GUARDRAIL_PROFILE
+    AF_LETHALITY_GUARDRAIL_PROFILE AF_LLM_MAX_TOKENS AF_LLM_PROVIDER
+    AF_NOS_TWO_STAGE_PROFILE AF_OPENAI_MODEL AF_OPENAI_REASONING_EFFORT
+    AF_OUTPUT_DIR AF_PROJECT_STATE AF_PUZZLE_GUARDRAIL_PROFILE
+    AF_SERIOUSNESS_GUARDRAIL_PROFILE AF_SOCIAL_INTERACTION_GUARDRAIL_PROFILE
+    AF_SOURCE_REGISTRY AF_SOURCE_ROOT AF_SPEC_ROOT AF_XLSX_ROOT
+  ].freeze
 
   class ForbiddenProvider
     def method_missing(name, *_args, **_options)
@@ -130,6 +138,44 @@ class DynamicLocalDispatchTest < Minitest::Test
     assert_equal({ "pending" => 3 }, runner.store.counts)
     refute Dir.exist?(File.join(@output, "runs"))
     refute runner.respond_to?(:remote_request, true)
+  end
+
+  def test_afw_environment_is_identical_for_local_and_remote_endpoints_except_runtime_binding
+    job_environment = AFW_CONTROL_NAMES.to_h { |name| [name, nil] }
+    job_environment["AF_LLM_PROVIDER"] = "ollama"
+    job_environment["AF_SOCIAL_INTERACTION_GUARDRAIL_PROFILE"] = "phase6-v0.3"
+    document = JSON.parse(@plan.bytes)
+    document["jobs"] = [fixture_job("success", pool_id: "model-a").merge(
+      "argv" => [RbConfig.ruby, "-rjson", "-e", "puts JSON.generate(ENV.to_h.select { |key, _| key.start_with?('AF_') })"],
+      "env" => job_environment
+    )]
+    @plan = WorkloadOrchestrator::Plan.new(JSON.generate(document))
+    previous = AFW_CONTROL_NAMES.to_h { |name| [name, ENV[name]] }
+    previous["AF_OLLAMA_BASE_URL"] = ENV["AF_OLLAMA_BASE_URL"]
+    AFW_CONTROL_NAMES.each { |name| ENV[name] = "stale-#{name}" }
+    ENV["AF_OLLAMA_BASE_URL"] = "http://wrong.example:11434"
+
+    observed = ["http://127.0.0.1:11441", "http://remote.example:11434"].map.with_index do |endpoint, index|
+      @output = File.join(@tmp, "output-#{index}")
+      record = worker("worker-a", "model-a").merge("endpoint" => endpoint)
+      @records = [record]
+      result = build_runner(Source.new { snapshot(@records) }, Open3.method(:capture3)).run
+      stderr = File.read(File.join(@output, "runs/success/stderr.log"))
+      assert_equal "completed", result, stderr
+      JSON.parse(File.read(File.join(@output, "runs/success/stdout.log")))
+    end
+
+    observed.each do |environment|
+      assert_equal "ollama", environment.fetch("AF_LLM_PROVIDER")
+      assert_equal "phase6-v0.3", environment.fetch("AF_SOCIAL_INTERACTION_GUARDRAIL_PROFILE")
+      refute environment.key?("AF_INVESTIGATION_GUARDRAIL_PROFILE")
+    end
+    assert_equal "http://127.0.0.1:11441", observed[0].fetch("AF_OLLAMA_BASE_URL")
+    assert_equal "http://remote.example:11434", observed[1].fetch("AF_OLLAMA_BASE_URL")
+    assert_equal observed[0].reject { |name, _value| name == "AF_OLLAMA_BASE_URL" },
+                 observed[1].reject { |name, _value| name == "AF_OLLAMA_BASE_URL" }
+  ensure
+    previous&.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
   end
 
   def test_runner_factory_rejects_dynamic_plans_and_sources_with_legacy_profiles

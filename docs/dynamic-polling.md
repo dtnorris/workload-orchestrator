@@ -46,14 +46,16 @@ busy loop while still stopping promptly.
 
 ## Local command endpoint binding
 
-Dynamic v0.3 commands run locally through WLO's command executor. After the
-selected worker's running attempt and exact identity are durably recorded,
-the launcher copies the job environment and sets `AF_OLLAMA_BASE_URL` from
-that attempt's immutable `worker_execution_identity.endpoint`. This is the
-existing AFW/AFSU Ollama client convention; it overrides the runtime config.
-The selected endpoint overrides any job value, including an explicit unset.
-Other job values and explicit unsets remain intact. The injected key is included
-in the attempt's `environment_keys` evidence.
+Dynamic v0.3 commands run locally through WLO's command executor. The child
+starts with WLO's ordinary inherited process environment. String values in the
+job `env` map set exact values and `null` removes variables. After the selected
+worker's running attempt and exact identity are durably recorded, the launcher
+sets `AF_OLLAMA_BASE_URL` from that attempt's immutable
+`worker_execution_identity.endpoint`. This is the existing AFW/AFSU Ollama
+client convention; it overrides the runtime config. The selected endpoint is
+applied last and overrides the parent environment or any job value, including
+an explicit unset. Other job values and explicit unsets remain intact. The
+injected key is included in the attempt's `environment_keys` evidence.
 
 Each subprocess receives its own environment map. WLO never changes global
 `ENV`, reselects a worker at launch, or asks RPOF to dispatch the command. A
@@ -61,10 +63,14 @@ replacement generation cannot change the original attempt's endpoint; DW-14
 still owns in-doubt reconciliation and explicit retry. Static v0.1/v0.2
 environment merging remains unchanged.
 
-AFW's generated scorer case environment leaves `AF_OLLAMA_BASE_URL` unset,
-allowing the local scorer child to inherit the WLO binding. Commands/adapters
-must honor this environment convention; WLO cannot enforce routing inside an
-arbitrary command that deliberately overrides it.
+AFW's generated v0.3 scorer environment enumerates its complete controlled
+namespace with strings or explicit unsets, while omitting
+`AF_OLLAMA_BASE_URL`. The locally executed adapter therefore inherits WLO's
+binding and passes the closed AFW configuration to the scorer. A local registry
+endpoint and a dynamically published remote endpoint use the same path and
+differ only in this WLO-owned value. Commands/adapters must honor the convention;
+WLO cannot enforce routing inside an arbitrary command that deliberately
+overrides it after launch.
 
 ## Stop and resume rules
 
