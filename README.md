@@ -28,9 +28,10 @@ WLO does not interpret the domain meaning of a workload or its results.
 
 New v0.2 plans declare logical pools and opaque jobs. Select placement separately
 with `--execution-profile FILE`; local and fixed remote endpoints use configured
-zero-cost workers. RPOF profiles support checks of existing capacity and fail closed on execution
-until paid safety, fulfillment, and remote dispatch are implemented. Existing
-v0.1 plans and their no-profile resume commands remain supported.
+zero-cost workers. RPOF profiles execute only through an explicitly approved
+paid-budget document, the Step-6 guarded fulfillment scope, and single-attempt
+RPOF dispatch. Existing v0.1 plans and their no-profile resume commands remain
+supported.
 
 See [the execution-profile contract](docs/execution-profile-v0.1.md) for the
 ownership boundary, examples, CLI, and resume rules.
@@ -221,10 +222,20 @@ limits, durable execution binding, and lifecycle coordination with RPOF's
 independent guardian. This library foundation does not enable paid execution;
 the nonzero-cost-worker and RPOF-profile execution blocks remain in place.
 
-## Execution-pool fulfillment
+## Execution-pool fulfillment and remote execution
 
 The [step 6 capacity API](docs/execution-pool-fulfillment-v0.1.md) joins logical
 model requirements with WLO worker counts and cost ceilings. Explicitly authorized
 library callers can obtain ready RPOF capacity inside a guarded budget scope;
 scope exit requests teardown. The adapter preserves RPOF's independent guardian.
-This does not yet connect paid capacity to the WLO job runner.
+Step 8 connects those handoffs to the WLO job runner. WLO sends one claimed job
+attempt to one handed-off worker at a time, so WLO remains authoritative for
+attempts, logs, `jobs.json`, pause, breaker and explicit retry. Start and resume
+require `--rpof-executable`, `--paid-budget` and `--authorize-paid-rpof` in
+addition to the logical plan and execution profile.
+
+Pause drains active attempts and retains no independent permission to spend. A
+resume can reattach only to the original budget binding, deadline and capacity;
+it never arms or fulfills again. If the guardian has expired that window, the
+fleet identity changed, or readiness/ownership no longer verifies, resume fails
+closed. See [RPOF execution](docs/rpof-execution-v0.1.md).

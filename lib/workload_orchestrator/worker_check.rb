@@ -37,6 +37,22 @@ module WorkloadOrchestrator
       raise Error, "worker readiness failed: #{detail}"
     end
 
+    def check_fixed_pools!(plan, workers)
+      pools = plan.pools.reject do |pool|
+        plan.execution_profile&.binding_for(pool.id)&.fetch("backend") == "rpof"
+      end
+      workers.validate_pools!(pools)
+      results = pools.flat_map do |pool|
+        pool.worker_names.map { |name| check_worker(pool, workers.fetch(name)) }
+      end
+      failures = results.reject(&:ok)
+      unless failures.empty?
+        detail = failures.map { |row| "#{row.pool_id}/#{row.worker_name}: #{row.detail}" }.join("; ")
+        raise Error, "worker readiness failed: #{detail}"
+      end
+      results
+    end
+
     private
 
     def check_remote_plan(plan, workers)

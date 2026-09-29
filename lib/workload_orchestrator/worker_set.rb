@@ -29,13 +29,12 @@ module WorkloadOrchestrator
       if plan.logical? && !plan.execution_profile
         raise Error, "logical plan requires --execution-profile FILE"
       end
-      plan.execution_profile&.ensure_runnable!
-      validate_pools!(plan.pools)
+      validate_pools!(plan.pools.reject { |pool| rpof_pool?(plan, pool) })
       plan
     end
 
-    # Readiness of mixed profiles validates only their fixed worker bindings.
-    # Execution still passes through validate_plan! and its RPOF prohibition.
+    # Readiness of mixed profiles validates only their fixed worker bindings;
+    # RPOF capacity is validated through its signed handoff and fresh proof.
     def validate_pools!(pools)
       pools.each { |pool| validate_pool!(pool) }
     end
@@ -49,6 +48,10 @@ module WorkloadOrchestrator
     end
 
     private
+
+    def rpof_pool?(plan, pool)
+      plan.execution_profile&.binding_for(pool.id)&.fetch("backend") == "rpof"
+    end
 
     def validate_pool!(pool)
       pool.worker_names.each do |name|

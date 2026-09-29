@@ -23,7 +23,7 @@ WLO owns:
 - worker selection and label checks;
 - zero-cost admission for v0.1;
 - optional Ollama model/digest readiness checks;
-- direct command dispatch;
+- direct local command dispatch and single-attempt RPOF dispatch;
 - bounded pool concurrency;
 - cross-process job claims;
 - pause and resume;
@@ -74,13 +74,12 @@ configured worker concurrency within an executor is unchanged.
 
 ## Cost boundary
 
-WLO v0.1 is intentionally zero-cost only. Any selected worker whose configured
-hourly rate is greater than zero is rejected before execution state is created.
-
-Provider-specific paid-resource lifecycle, cumulative spend enforcement, and
-remote resource creation are deliberately outside this milestone. A future paid
-integration must add independently enforced finite cost/runtime controls rather
-than weakening this boundary.
+Configured local/fixed workers remain zero-cost only. RPOF execution is a
+separate guarded path: an immutable paid-budget document must match the exact
+plan/profile bytes; RPOF independently enforces the cumulative cap, runtime
+deadline, reservations and guardian cleanup; and WLO dispatches only within the
+Step-6 capacity scope. Pause/retry resume never re-arms, re-fulfills or extends
+that original authority.
 
 
 

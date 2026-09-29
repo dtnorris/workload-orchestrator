@@ -138,6 +138,25 @@ class RpofClientTest < Minitest::Test
     assert_equal [], result.document["jobs"]
   end
 
+  def test_dispatch_timeout_terminates_the_provider_process_group_and_retains_transport_evidence
+    marker = File.join(@root, "late-marker")
+    request = dispatch_request
+    request["jobs"].first["argv"] = [
+      RbConfig.ruby, "-e", "sleep 1; File.write(ARGV.fetch(0), 'late')", marker
+    ]
+    output = File.join(@root, "timed-out")
+
+    error = assert_raises(Client::TransportError) do
+      @client.dispatch(request: request, workdir: @root, output_dir: output, timeout_seconds: 0.05)
+    end
+
+    assert_includes error.message, "original paid deadline"
+    sleep 0.1
+    refute File.exist?(marker)
+    evidence = JSON.parse(File.read(File.join(output, "client.json")))
+    assert_includes evidence.fetch("transport_error"), "outcome is in doubt"
+  end
+
   def test_existing_output_is_rejected_without_overwriting_evidence_or_spawning
     output = File.join(@root, "old")
     Dir.mkdir(output)

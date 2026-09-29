@@ -117,14 +117,14 @@ class RpofReadinessTest < Minitest::Test
     assert_includes error.message, "current pod evidence missing"
   end
 
-  def test_mixed_readiness_checks_fixed_pools_and_retains_execution_gate
+  def test_mixed_readiness_checks_fixed_pools_and_retains_fixed_worker_cost_gate
     @plan["pools"] << { "pool_id" => "local-pool" }
     @profile["pools"] << { "pool_id" => "local-pool", "backend" => "local", "worker_names" => ["local"], "max_concurrency" => 1 }
     workers = WLO::WorkerSet.load(write_workers(@tmp))
     checker = WLO::WorkerCheck.new(rpof_client: client([]))
-    assert_equal %w[remote local-pool], checker.check_plan!(bound_plan, workers).map(&:pool_id)
-    error = assert_raises(WLO::Error) { workers.validate_plan!(bound_plan) }
-    assert_includes error.message, "RPOF execution is not implemented"
+    bound = bound_plan
+    assert_equal %w[remote local-pool], checker.check_plan!(bound, workers).map(&:pool_id)
+    assert_same bound, workers.validate_plan!(bound)
     requests = []
     paid = WLO::WorkerSet.load(write_workers(@tmp, rate: 1))
     assert_raises(WLO::Error) { WLO::WorkerCheck.new(rpof_client: client(requests)).check_plan!(bound_plan, paid) }

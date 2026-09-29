@@ -21,6 +21,7 @@ module WorkloadOrchestrator
       @operations = Mutex.new
       @running = false
       @started = false
+      @suspended = false
       @failure = nil
     end
 
@@ -71,6 +72,7 @@ module WorkloadOrchestrator
 
     def finish!(reason:)
       stop_heartbeat
+      return false if @suspended
       return true unless @started && @lock
 
       @operations.synchronize do
@@ -82,6 +84,22 @@ module WorkloadOrchestrator
       false
     ensure
       release_binding!
+    end
+
+    # A graceful WLO pause leaves the immutable provider budget and capacity in
+    # place only until the original heartbeat timeout/deadline. A later WLO may
+    # reconnect to that same ledger; it cannot re-arm or extend it. If no owner
+    # returns, the independent guardian remains the cleanup authority.
+    def suspend!
+      stop_heartbeat
+      @suspended = true
+      true
+    ensure
+      release_binding!
+    end
+
+    def suspended?
+      @suspended
     end
 
     def last_error

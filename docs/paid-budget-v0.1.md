@@ -5,7 +5,7 @@
 Migration step 5 provides a provider-neutral declaration and lifecycle plus a
 process/JSON adapter to the existing RPOF guardian. It does not provision, scale,
 lease, close, disable a guardian, or enable paid execution. Both the runner's
-nonzero-cost-worker rejection and `ExecutionProfile#ensure_runnable!` remain
+nonzero-cost fixed-worker rejection and explicit RPOF paid authorization remain
 unchanged. AFW's legacy paid callers are not removed yet.
 
 `PaidBudget`, `PaidBudgetLifecycle`, and `RpofBudgetClient` are loaded by

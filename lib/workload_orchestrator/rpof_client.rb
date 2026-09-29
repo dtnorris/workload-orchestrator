@@ -16,6 +16,16 @@ module WorkloadOrchestrator
     LEGACY_DISPATCH_SUMMARY = "afio-rpof-dispatch-summary/v0.1"
 
     Result = Struct.new(:document, :exit_status, :stdout, :stderr, keyword_init: true)
+    class TransportError < Error
+      attr_reader :exit_status, :stdout, :stderr
+
+      def initialize(message, exit_status: nil, stdout: "", stderr: "")
+        super(message)
+        @exit_status = exit_status
+        @stdout = stdout
+        @stderr = stderr
+      end
+    end
 
     def initialize(executable:)
       unless executable.is_a?(String) && executable.start_with?("/") && !executable.include?("\0") &&
@@ -42,7 +52,7 @@ module WorkloadOrchestrator
 
     # Dispatch to an existing fleet only. A new output directory prevents stale
     # evidence being mistaken for this invocation. WLO-managed resume is step 8.
-    def dispatch(request:, workdir:, output_dir:)
+    def dispatch(request:, workdir:, output_dir:, timeout_seconds: nil)
       RpofContract.dispatch_request!(request)
       directory = File.realpath(workdir)
       raise Error, "workdir must be a directory" unless File.directory?(directory)
@@ -50,7 +60,10 @@ module WorkloadOrchestrator
       output = File.expand_path(output_dir)
       FileUtils.mkdir_p(File.dirname(output))
       Dir.mkdir(output)
-      result = invoke(request, LEGACY_DISPATCH_REQUEST, "dispatch", ["--workdir", directory, "--output", output])
+      result = invoke_dispatch(
+        request, ["--workdir", directory, "--output", output], timeout_seconds: timeout_seconds
+      )
+      persist_transport(output, result)
       document = read_result(File.join(output, "summary.json"), LEGACY_DISPATCH_SUMMARY)
       RpofContract.dispatch_summary!(document, request, result.exit_status)
       result.document = document.merge("contract_version" => RpofContract::DISPATCH_SUMMARY)
@@ -59,9 +72,90 @@ module WorkloadOrchestrator
       raise Error, "dispatch output already exists; use a new output directory (provider evidence is preserved)"
     rescue SystemCallError => e
       raise Error, "RPOF dispatch filesystem error: #{e.message}"
+    rescue TransportError => e
+      persist_transport(output, e) if defined?(output) && output && File.directory?(output)
+      raise
     end
 
     private
+
+    def invoke_dispatch(request, arguments, timeout_seconds:)
+      if timeout_seconds && (!timeout_seconds.is_a?(Numeric) || !timeout_seconds.finite? || !timeout_seconds.positive?)
+        raise Error, "RPOF dispatch timeout must be positive and finite"
+      end
+      Tempfile.create(["wlo-rpof-request-", ".json"]) do |file|
+        file.write(JSON.generate(request.merge("contract_version" => LEGACY_DISPATCH_REQUEST)))
+        file.flush
+        owner_reader, owner_writer = IO.pipe
+        stdout = stderr = ""
+        status = nil
+        Open3.popen3(
+          [@executable, @executable], "dispatch", "--request", file.path, *arguments,
+          "--owner-fd", "3", { 3 => owner_reader, pgroup: true }
+        ) do |input, output, error, waiter|
+          input.close
+          owner_reader.close
+          readers = [output, error].map { |io| Thread.new { io.read } }
+          completed = timeout_seconds ? waiter.join(timeout_seconds) : waiter.join
+          unless completed
+            terminate_group(waiter.pid)
+            stdout, stderr = readers.map { |reader| reader.value }
+            raise TransportError.new(
+              "RPOF dispatch timed out at the original paid deadline; outcome is in doubt",
+              stdout: stdout, stderr: stderr
+            )
+          end
+          status = waiter.value
+          stdout, stderr = readers.map { |reader| reader.value }
+        ensure
+          readers&.each { |reader| reader.kill if reader.alive? }
+          readers&.each(&:join)
+        end
+        unless status.exited? && [0, 1].include?(status.exitstatus)
+          detail = status.signaled? ? "signal #{status.termsig}" : "exit #{status.exitstatus}"
+          raise TransportError.new(
+            "RPOF dispatch failed (#{detail}): #{stderr.strip}",
+            exit_status: status.exitstatus, stdout: stdout, stderr: stderr
+          )
+        end
+        Result.new(exit_status: status.exitstatus, stdout: stdout, stderr: stderr)
+      ensure
+        owner_writer&.close unless owner_writer&.closed?
+        owner_reader&.close unless owner_reader&.closed?
+      end
+    rescue SystemCallError => e
+      raise TransportError, "RPOF dispatch could not run: #{e.message}"
+    end
+
+    def terminate_group(pid)
+      Process.kill("TERM", -pid)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2.0
+      sleep 0.05 while process_group_alive?(pid) && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      Process.kill("KILL", -pid) if process_group_alive?(pid)
+    rescue Errno::ESRCH
+      nil
+    end
+
+    def process_group_alive?(pid)
+      Process.kill(0, -pid)
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      true
+    end
+
+    def persist_transport(output, result)
+      File.write(File.join(output, "client-stdout.log"), result.stdout.to_s)
+      File.write(File.join(output, "client-stderr.log"), result.stderr.to_s)
+      File.write(
+        File.join(output, "client.json"),
+        JSON.pretty_generate(
+          "exit_status" => result.exit_status,
+          "transport_error" => (result.is_a?(TransportError) ? result.message : nil)
+        ) + "\n"
+      )
+    end
 
     def invoke(request, wire_version, operation, arguments)
       Tempfile.create(["wlo-rpof-request-", ".json"]) do |file|

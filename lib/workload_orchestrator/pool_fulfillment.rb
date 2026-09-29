@@ -4,10 +4,12 @@ require_relative "rpof_capacity_client"
 require_relative "paid_budget_lifecycle"
 
 module WorkloadOrchestrator
-  # Capacity is valid only inside the block while the original guardian budget
-  # and heartbeat lifecycle remain active. This does not dispatch jobs.
+  # Capacity is consumed inside the block while the original guardian budget
+  # and heartbeat lifecycle remain active. A deliberate retained outcome may be
+  # reattached only while that same budget, deadline and capacity remain valid.
   class PoolFulfillment
     VERSION = "wlo-execution-pool-handoff/v0.1"
+    Outcome = Struct.new(:value, :retain_capacity, keyword_init: true)
 
     def initialize(pool_plan:, client:, output_dir:)
       @plan = pool_plan
@@ -15,38 +17,114 @@ module WorkloadOrchestrator
       @output = File.expand_path(output_dir)
     end
 
-    def with_capacity(authorize_paid: false)
+    def with_capacity(authorize_paid: false, resume: false)
       raise Error, "capacity scope requires a block" unless block_given?
       raise Error, "paid fulfillment requires explicit authorize_paid: true" unless authorize_paid == true
+      prepare_output!(resume)
+      lifecycle = PaidBudgetLifecycle.new(budget: @plan.budget, client: @client,
+                                          binding_path: File.join(@output, "budget-binding.json"))
+      completed = false
+      retained = false
+      begin
+        bounds = lifecycle.start!
+        handoffs = resume ? resume_handoffs(lifecycle, bounds) : fulfill_handoffs(lifecycle, bounds)
+        outcome = yield(handoffs, lifecycle)
+        outcome = Outcome.new(value: outcome, retain_capacity: false) unless outcome.is_a?(Outcome)
+        lifecycle.check_for!(budget: @plan.budget, client: @client)
+        completed = true
+        retained = outcome.retain_capacity == true
+        lifecycle.suspend! if retained
+        outcome.value
+      ensure
+        teardown = if lifecycle&.suspended?
+                     false
+                   else
+                     lifecycle&.finish!(reason: completed ? "wlo_capacity_scope_complete" : "wlo_capacity_scope_failed")
+                   end
+        error = $!
+        write_session("completed" => completed, "capacity_retained" => retained,
+                      "teardown_requested" => teardown == true, "error" => error&.message,
+                      "cleanup_error" => lifecycle&.last_error&.message)
+        if !teardown && !retained && !error
+          raise Error, "budget teardown was not acknowledged; guardian fallback remains active"
+        end
+      end
+    end
+
+    private
+
+    def prepare_output!(resume)
+      if resume
+        unless File.directory?(@output) && File.file?(File.join(@output, "capacity.json"))
+          raise Error, "resume requires the original capacity evidence; re-fulfillment is forbidden"
+        end
+        return
+      end
+
       FileUtils.mkdir_p(File.dirname(@output))
       Dir.mkdir(@output)
       write_json("intent.json", @plan.preview)
       preflight!
-      lifecycle = PaidBudgetLifecycle.new(budget: @plan.budget, client: @client,
-                                          binding_path: File.join(@output, "budget-binding.json"))
-      completed = false
-      begin
-        bounds = lifecycle.start!
-        handoffs = @plan.requests.keys.to_h do |pool_id|
-          [pool_id, fulfill_one(pool_id, lifecycle, bounds)]
-        end
-        write_json("capacity.json", handoffs)
-        value = yield(handoffs, lifecycle)
-        lifecycle.check_for!(budget: @plan.budget, client: @client)
-        completed = true
-        value
-      ensure
-        teardown = lifecycle.finish!(reason: completed ? "wlo_capacity_scope_complete" : "wlo_capacity_scope_failed")
-        error = $!
-        write_json("session.json", "completed" => completed, "teardown_requested" => teardown,
-                                  "error" => error&.message, "cleanup_error" => lifecycle.last_error&.message)
-        raise Error, "budget teardown was not acknowledged; guardian fallback remains active" if !teardown && !error
-      end
     rescue Errno::EEXIST
-      raise Error, "capacity output already exists; automatic retry/resume is not supported"
+      raise Error, "capacity output already exists; use resume to evaluate the original budget/capacity"
     end
 
-    private
+    def fulfill_handoffs(lifecycle, bounds)
+      handoffs = @plan.requests.keys.to_h do |pool_id|
+        [pool_id, fulfill_one(pool_id, lifecycle, bounds)]
+      end
+      write_json("capacity.json", handoffs)
+      handoffs
+    end
+
+    def resume_handoffs(lifecycle, bounds)
+      handoffs = JSON.parse(File.read(File.join(@output, "capacity.json")))
+      unless handoffs.is_a?(Hash) && handoffs.keys.sort == @plan.requests.keys.sort
+        raise Error, "persisted capacity handoffs do not match the execution pools"
+      end
+      handoffs.each do |pool_id, handoff|
+        verify_handoff!(pool_id, handoff, bounds)
+        target = verify_readiness!(pool_id, @plan.request(pool_id), handoff.fetch("target"))
+        raise Error, "persisted capacity target identity changed" unless target == handoff.fetch("target")
+        snapshot = lifecycle.check_for!(budget: @plan.budget, client: @client)
+        rate = verify_ownership!(@plan.request(pool_id), target, snapshot)
+        unless rate == handoff.fetch("hourly_rate_usd")
+          raise Error, "persisted capacity hourly rate changed"
+        end
+      end
+      handoffs
+    rescue JSON::ParserError, KeyError, SystemCallError => e
+      raise Error, "invalid persisted capacity handoff: #{e.message}"
+    end
+
+    def verify_handoff!(pool_id, handoff, bounds)
+      expected = {
+        "contract_version" => VERSION, "pool_id" => pool_id,
+        "plan_sha256" => @plan.plan_sha256, "profile_sha256" => @plan.profile_sha256,
+        "budget" => @plan.budget.identity, "deadline_at_utc" => bounds.fetch("deadline_at_utc"),
+        "requirements" => @plan.request(pool_id).fetch("requirements")
+      }
+      expected.each do |key, value|
+        raise Error, "persisted capacity #{key} mismatch" unless handoff[key] == value
+      end
+      raise Error, "persisted capacity is not ready" unless %w[ready partial_ready].include?(handoff["status"])
+      request_capacity = @plan.request(pool_id).fetch("capacity")
+      capacity = handoff["capacity"]
+      unless capacity.is_a?(Hash) && request_capacity.all? { |key, value| capacity[key] == value }
+        raise Error, "persisted capacity bounds changed"
+      end
+      final = capacity["final_workers"]
+      minimum = capacity.fetch("minimum_workers")
+      desired = capacity.fetch("desired_workers")
+      unless final.is_a?(Integer) && final.between?(minimum, desired)
+        raise Error, "persisted capacity worker count is invalid"
+      end
+      rate = handoff["hourly_rate_usd"]
+      unless rate.is_a?(Numeric) && rate.finite? && rate.positive? &&
+             rate <= request_capacity.fetch("max_pool_hourly_usd")
+        raise Error, "persisted capacity hourly rate is invalid"
+      end
+    end
 
     def preflight!
       @plan.requests.each_key do |pool_id|
@@ -79,10 +157,15 @@ module WorkloadOrchestrator
     end
 
     def verify_readiness!(pool_id, request, result)
-      target = { "fleet_key" => result.fetch("execution_handle"),
-                 "worker_selector" => { "mode" => "indices", "indices" => result.fetch("worker_indices") } }
+      target = if result.key?("execution_handle")
+                 { "fleet_key" => result.fetch("execution_handle"),
+                   "worker_selector" => { "mode" => "indices", "indices" => result.fetch("worker_indices") } }
+               else
+                 { "fleet_key" => result.fetch("fleet_key"),
+                   "worker_selector" => { "mode" => "indices", "indices" => result.fetch("worker_indices") } }
+               end
       proof = @plan.readiness(pool_id, target).check(@client)
-      write_json("#{request.fetch('pool_id')}-readiness.json", proof)
+      write_json(next_readiness_name(request.fetch("pool_id")), proof)
       raise Error, "fulfilled capacity failed fresh readiness check" unless proof["ready"] == true
       { "fleet_key" => target.fetch("fleet_key"), "expected_fleet_id" => proof.fetch("fleet_id"),
         "worker_indices" => proof.fetch("selected_worker_indices") }
@@ -115,8 +198,29 @@ module WorkloadOrchestrator
       File.join(@output, @plan.request(pool_id).fetch("pool_id"), phase)
     end
 
-    def write_json(name, document)
-      path = File.join(@output, name)
+    def next_readiness_name(pool_id)
+      base = "#{pool_id}-readiness"
+      return "#{base}.json" unless File.exist?(File.join(@output, "#{base}.json"))
+
+      index = 2
+      index += 1 while File.exist?(File.join(@output, "#{base}-#{index}.json"))
+      "#{base}-#{index}.json"
+    end
+
+    def write_session(document)
+      path = File.join(@output, "session.json")
+      if File.exist?(path)
+        directory = File.join(@output, "sessions")
+        FileUtils.mkdir_p(directory)
+        index = 2
+        index += 1 while File.exist?(File.join(directory, "session-#{index}.json"))
+        path = File.join(directory, "session-#{index}.json")
+      end
+      write_json(path, document, absolute: true)
+    end
+
+    def write_json(name, document, absolute: false)
+      path = absolute ? name : File.join(@output, name)
       Tempfile.create(["wlo-capacity-evidence-", ".json"], File.dirname(path)) do |file|
         file.write(JSON.pretty_generate(document) + "\n")
         file.flush

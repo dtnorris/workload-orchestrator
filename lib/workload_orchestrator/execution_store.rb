@@ -90,6 +90,14 @@ module WorkloadOrchestrator
       read_execution.dig("circuit_breaker", "tripped") == true
     end
 
+    def dispatch_halted?
+      read_execution.key?("dispatch_halt")
+    end
+
+    def dispatch_halt
+      read_execution["dispatch_halt"]
+    end
+
     def acknowledge_circuit_breaker!
       update_execution do |state|
         breaker = state.fetch("circuit_breaker")
@@ -145,7 +153,7 @@ module WorkloadOrchestrator
       Time.now
     end
 
-    def record_terminal!(job:, status:, started_at:, exit_status:, error: nil)
+    def record_terminal!(job:, status:, started_at:, exit_status:, error: nil, evidence: nil)
       raise Error, "invalid terminal status #{status.inspect}" unless TERMINAL_JOB_STATUSES.include?(status)
 
       document = metadata_for(job) || {}
@@ -157,9 +165,41 @@ module WorkloadOrchestrator
         "exit_status" => exit_status
       )
       document["error"] = error if error
+      document["evidence"] = evidence if evidence
       write_json(metadata_path(job), document)
       record_breaker_result!(status)
       rebuild_jobs!
+    end
+
+    def record_dispatch_halt!(kind:, error:, job: nil)
+      update_execution do |state|
+        state["dispatch_halt"] ||= {
+          "kind" => kind.to_s,
+          "error" => error.to_s,
+          "job_id" => job&.id,
+          "attempt" => job && metadata_for(job)&.fetch("attempt", nil),
+          "at" => timestamp
+        }
+        state["status"] = "infrastructure_failed"
+      end
+    end
+
+    # A vanished WLO owner may have lost the provider result after starting a
+    # remote command. Convert that durable running marker into a terminal,
+    # explicitly retryable in-doubt attempt; never replay it on ordinary resume.
+    def reconcile_remote_running!
+      plan.jobs.each do |job|
+        metadata = metadata_for(job)
+        next unless metadata&.fetch("status") == "running"
+
+        started_at = Time.parse(metadata.fetch("started_at"))
+        write_logs(job, existing_log(job, "stdout.log"), existing_log(job, "stderr.log") +
+          "WLO owner disappeared before the remote outcome was verified; attempt is in doubt.\n")
+        record_terminal!(job: job, status: "failed", started_at: started_at, exit_status: nil,
+                         error: "remote attempt outcome is in doubt; explicit retry required",
+                         evidence: { "kind" => "remote_in_doubt" })
+        record_dispatch_halt!(kind: "remote_in_doubt", error: metadata.fetch("job_id"), job: job)
+      end
     end
 
     def write_logs(job, stdout, stderr)
@@ -296,6 +336,7 @@ module WorkloadOrchestrator
 
     def final_status_unlocked(state)
       return "paused" if paused?
+      return "infrastructure_failed" if state.key?("dispatch_halt")
       return "circuit_broken" if state.dig("circuit_breaker", "tripped")
 
       current = counts
@@ -401,6 +442,11 @@ module WorkloadOrchestrator
 
     def timestamp
       Time.now.iso8601
+    end
+
+    def existing_log(job, name)
+      path = File.join(run_dir(job), name)
+      File.file?(path) ? File.read(path) : ""
     end
   end
 end

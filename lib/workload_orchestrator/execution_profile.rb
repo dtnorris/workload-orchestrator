@@ -6,8 +6,7 @@ require "json"
 require_relative "rpof_contract"
 
 module WorkloadOrchestrator
-  # Placement policy is separate from workload intent. RPOF supports readiness;
-  # execution awaits independently enforced budget and dispatch contracts.
+  # Placement policy is separate from workload intent.
   class ExecutionProfile
     CONTRACT_VERSION = "wlo-execution-profile/v0.1"
     BACKENDS = %w[local fixed_remote rpof].freeze
@@ -65,10 +64,11 @@ module WorkloadOrchestrator
       document.fetch("pools").find { |row| row.fetch("pool_id") == pool_id }
     end
 
+    # Compatibility for callers that used the pre-Step-8 execution gate.
+    # Construction already validates the profile; paid authorization is checked
+    # only when an RPOF run is assembled with its exact budget and client.
     def ensure_runnable!
-      return unless rpof?
-
-      raise Error, "RPOF execution is not implemented; paid safety, fulfillment and remote dispatch are required"
+      self
     end
 
     def bind(plan)

@@ -78,6 +78,12 @@ Existing `retry-failed` selects and archives failed attempts; a subsequent
 `start --resume` executes those queued retries. Start never implicitly retries a
 failed job. Foreground `run` and `resume` remain available.
 
+For an RPOF profile, every run/start/resume also supplies the original
+`--paid-budget FILE`, absolute `--rpof-executable FILE`, and
+`--authorize-paid-rpof`. Resume evaluates only the retained Step-6 handoff and
+same budget binding. It never provisions replacement capacity, resets the
+deadline, or widens the cumulative cap.
+
 Manager exit code is 0 for completed/paused execution, 2 for workload/breaker
 failure, and 1 for manager errors. Read the launch result to learn that code;
 the original `start` command already returned after startup acknowledgement.

@@ -125,7 +125,7 @@ class ExecutionProfileTest < Minitest::Test
     assert_raises(WorkloadOrchestrator::Error) { profile }
   end
 
-  def test_rpof_is_declarative_only_and_fails_before_output_or_worker_access
+  def test_rpof_execution_requires_explicit_paid_authorization_before_output_or_worker_access
     @profile["pools"] = [binding_for("rpof")]
     @profile["budget"] = budget
     write_profile
@@ -133,11 +133,11 @@ class ExecutionProfileTest < Minitest::Test
     assert_equal 0, cli("validate").first
     code, out, err = cli("plan")
     assert_equal 0, code, err
-    assert_includes out, "BLOCKED"
+    assert_includes out, "RPOF-enabled"
     %w[run resume].each do |command|
       code, _out, err = cli(command)
       assert_equal 1, code
-      assert_includes err, "RPOF execution is not implemented"
+      assert_includes err, "requires explicit --authorize-paid-rpof"
       refute File.exist?(File.join(@tmp, "output"))
     end
   end

@@ -62,7 +62,7 @@ module WorkloadOrchestrator
         @out.puts "Plan: #{plan.id} (#{plan.sha256})"
         @out.puts "Execution profile: #{plan.execution_profile.sha256}"
         @out.puts JSON.pretty_generate(plan.execution_profile.document)
-        @out.puts "Execution: BLOCKED — RPOF safety/fulfillment/dispatch are not implemented"
+        @out.puts "Execution: RPOF-enabled with an exact paid budget and explicit authorization"
         require_workdir(options)
         return 0
       end
@@ -94,14 +94,16 @@ module WorkloadOrchestrator
 
       reject_extra_arguments!
       plan = load_bound_plan(plan_path, options)
-      plan.execution_profile&.ensure_runnable!
-      workers = load_workers(options)
+      workers = load_workers_for_plan(options, plan)
+      remote = remote_execution(plan, options)
       runner = Runner.new(
         plan: plan,
         workers: workers,
         workdir: require_workdir(options),
         output_dir: options.fetch(:output),
-        out: detached ? $stdout : @out
+        out: detached ? $stdout : @out,
+        rpof_client: remote && remote.fetch(:client),
+        capacity_session: remote && remote.fetch(:session)
       )
       return start_manager(runner, resume, options) if detached
 
@@ -142,7 +144,7 @@ module WorkloadOrchestrator
       plan = load_bound_plan(plan_path, options)
       workers_sha256 = nil
       if plan.logical?
-        workers = load_workers(options)
+        workers = load_workers_for_plan(options, plan)
         workers.validate_plan!(plan)
         workers_sha256 = workers.execution_sha256(plan)
       end
@@ -189,13 +191,16 @@ module WorkloadOrchestrator
     end
 
     def parse_runtime_options(require_output:, allow_acknowledge: false, detached: false)
-      options = { workdir: nil, output: nil, workers_config: nil, acknowledge: false }
+      options = { workdir: nil, output: nil, workers_config: nil, acknowledge: false, authorize_paid_rpof: false }
       parser = OptionParser.new do |opts|
         opts.on("--resume") { options[:resume] = true } if detached
         opts.on("--workdir DIR") { |value| options[:workdir] = value }
         opts.on("--output DIR") { |value| options[:output] = value }
         opts.on("--workers-config FILE") { |value| options[:workers_config] = value }
         opts.on("--execution-profile FILE") { |value| options[:execution_profile] = value }
+        opts.on("--rpof-executable FILE") { |value| options[:rpof_executable] = value }
+        opts.on("--paid-budget FILE") { |value| options[:paid_budget] = value }
+        opts.on("--authorize-paid-rpof") { options[:authorize_paid_rpof] = true }
         opts.on("--acknowledge-circuit-breaker") { options[:acknowledge] = true } if allow_acknowledge
       end
       parser.parse!(@argv)
@@ -234,6 +239,40 @@ module WorkloadOrchestrator
       path = ENV.fetch("WLO_WORKERS_CONFIG", "").to_s if path.empty?
       path = File.join(@root, "config", "workers.yml") if path.empty?
       WorkerSet.load(path)
+    end
+
+    def load_workers_for_plan(options, plan)
+      fixed = plan.pools.any? do |pool|
+        plan.execution_profile&.binding_for(pool.id)&.fetch("backend") != "rpof"
+      end
+      fixed ? load_workers(options) : WorkerSet.new({})
+    end
+
+    def remote_execution(plan, options)
+      return nil unless plan.execution_profile&.rpof?
+      unless options[:authorize_paid_rpof] == true
+        raise Error, "RPOF execution requires explicit --authorize-paid-rpof"
+      end
+      executable = options[:rpof_executable].to_s
+      budget_path = options[:paid_budget].to_s
+      raise Error, "RPOF execution requires --rpof-executable FILE" if executable.empty?
+      raise Error, "RPOF execution requires --paid-budget FILE" if budget_path.empty?
+
+      budget_document = JSON.parse(File.read(File.expand_path(budget_path)))
+      budget = PaidBudget.new(
+        budget_document, plan_bytes: plan.bytes, execution_profile: plan.execution_profile
+      )
+      pool_plan = ExecutionPoolPlan.new(
+        plan: plan, profile: plan.execution_profile, budget: budget
+      )
+      client = RpofCapacityClient.new(executable: executable)
+      session = PoolFulfillment.new(
+        pool_plan: pool_plan, client: client,
+        output_dir: File.join(File.expand_path(options.fetch(:output)), "capacity")
+      )
+      { client: client, session: session }
+    rescue JSON::ParserError, SystemCallError => e
+      raise Error, "cannot load paid budget: #{e.message}"
     end
 
     def print_plan(plan, workers, workdir)
@@ -314,12 +353,15 @@ module WorkloadOrchestrator
           bin/wlo plan PLAN.json --workdir DIR [--workers-config FILE]
           bin/wlo worker-check PLAN.json [--workers-config FILE] [--execution-profile FILE] [--rpof-executable FILE]
           bin/wlo run PLAN.json --workdir DIR --output DIR [--workers-config FILE]
+                      [--execution-profile FILE --rpof-executable FILE --paid-budget FILE --authorize-paid-rpof]
           bin/wlo start PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--resume]
                         [--acknowledge-circuit-breaker] [--execution-profile FILE]
+                        [--rpof-executable FILE --paid-budget FILE --authorize-paid-rpof]
           bin/wlo status PLAN.json --output DIR [--human | --json]
           bin/wlo summary PLAN.json --output DIR [--json]
           bin/wlo pause --output DIR
           bin/wlo resume PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--acknowledge-circuit-breaker]
+                         [--execution-profile FILE --rpof-executable FILE --paid-budget FILE --authorize-paid-rpof]
           bin/wlo retry-failed PLAN.json --workdir DIR --output DIR (--all | --job ID ...) --reason TEXT
                                [--acknowledge-circuit-breaker]
           bin/wlo --version

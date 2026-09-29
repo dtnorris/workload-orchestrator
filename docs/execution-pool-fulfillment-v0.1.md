@@ -1,9 +1,9 @@
 # Execution-pool fulfillment v0.1
 
-Step 6 adds an explicit paid-capacity library API. It joins an immutable logical
-plan, an execution profile, and the step 5 budget. It does not dispatch jobs or
-enable `wlo run`/`start` for RPOF profiles. Existing zero-cost runner gates remain.
-AFW's legacy production path is retained until the unified execution migration.
+Step 6 adds an explicit paid-capacity library API. Step 8 consumes that API from
+the WLO runner; fulfillment itself still does not schedule or interpret jobs.
+Existing fixed-worker zero-cost gates remain, and AFW's legacy production path
+is retained until its later cleanup step.
 
 ## Ownership decision
 
@@ -52,7 +52,7 @@ client = RpofCapacityClient.new(executable: "/absolute/runpod-ollama-fleet/bin/r
 session = PoolFulfillment.new(pool_plan: pools, client: client,
                               output_dir: "/absolute/new-capacity-evidence")
 session.with_capacity(authorize_paid: true) do |handoffs, lifecycle|
-  # Capacity is live only in this block. Step 8 supplies the job executor.
+  # Capacity is consumed by the Step-8 job executor in this guarded scope.
   # Check lifecycle before each dispatch and stop dispatch on failure.
   lifecycle.check!
   consume_capacity(handoffs)
@@ -102,11 +102,12 @@ identity, original deadline, actual hourly rate, exact fleet ID and worker indic
 requirements and returned capacity. A handoff is evidence, not a transferable
 lease or permission to dispatch after the block exits.
 
-There is no automatic capacity retry, adoption or resume. Existing output or
-preexisting capacity is refused. Do not delete evidence, rotate budget IDs or
-create another directory to bypass an uncertain prior outcome; inspect the
-original ledger and guardian first. Lifecycle binding still preserves the
-original deadline for callers using its separate resume API.
+There is no automatic capacity retry or adoption. Step-8 resume is the sole
+narrow exception: after a deliberate paused/retryable outcome, it reopens the
+same binding and verifies the immutable handoff, original deadline, current
+readiness and exact budget ownership. It makes no fulfillment call. Missing,
+expired, changed or teardown-state capacity fails closed. Do not delete evidence,
+rotate budget IDs or create another directory to bypass an uncertain outcome.
 
 ## Failure and cleanup
 
@@ -120,10 +121,8 @@ original runtime lease and durable pre-mutation reservations, as specified in
 [the paid-budget contract](paid-budget-v0.1.md). WLO never disables that guardian.
 
 The existing guardian-host availability and provider deletion-window assumptions
-still apply. This step does not implement terminal absence polling, remote job
-dispatch or paid resume; those remain required for unified execution. Keep the
-runner gates until that integration and an explicitly approved live pilot prove
-the end-to-end behavior.
+still apply. Step 8 does not implement terminal absence polling; that remains a
+Step-10 concern.
 
 ## Validation baseline
 
@@ -134,5 +133,6 @@ Tests exercise the real adapter, budget lifecycle and readiness code with a fake
 provider process boundary plus a harmless executable fixture. They cover exact
 translation, aggregate ceilings, explicit authorization, stale evidence,
 wrong identities, insufficient readiness, unowned workers, uncertain creation,
-later-pool failure and failed teardown. They do not create paid resources or
-prove live guardian survival/provider deletion latency.
+later-pool failure and failed teardown. Step 8 adds local fake-transport coverage.
+The tests do not create paid resources or prove live guardian survival/provider
+deletion latency.

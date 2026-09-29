@@ -349,6 +349,35 @@ class PoolFulfillmentTest < Minitest::Test
     assert_equal evidence, File.binread(File.join(@output, "capacity.json"))
   end
 
+  def test_resume_reuses_only_the_original_live_budget_and_capacity
+    first = session.with_capacity(authorize_paid: true) do |_handoffs, _lifecycle|
+      WorkloadOrchestrator::PoolFulfillment::Outcome.new(value: :paused, retain_capacity: true)
+    end
+    assert_equal :paused, first
+    assert_equal "ARMED", @provider.snapshot["state"]
+    paid_calls = @provider.calls.count { |args| args.include?("--yes") }
+    arm_calls = @provider.calls.count { |args| args == ["budget", "arm"] }
+
+    resumed = session.with_capacity(authorize_paid: true, resume: true) do |handoffs, _lifecycle|
+      assert_equal %w[alpha beta], handoffs.keys
+      :completed
+    end
+
+    assert_equal :completed, resumed
+    assert_equal paid_calls, @provider.calls.count { |args| args.include?("--yes") }
+    assert_equal arm_calls, @provider.calls.count { |args| args == ["budget", "arm"] }
+    assert_equal "TEARDOWN_REQUIRED", @provider.snapshot["state"]
+    assert File.file?(File.join(@output, "sessions", "session-2.json"))
+  end
+
+  def test_resume_never_fulfills_when_original_capacity_evidence_is_missing
+    error = assert_raises(WorkloadOrchestrator::Error) do
+      session.with_capacity(authorize_paid: true, resume: true) { flunk }
+    end
+    assert_includes error.message, "re-fulfillment is forbidden"
+    assert_empty @provider.calls
+  end
+
   def test_later_pool_failure_tears_down_the_same_parent_budget
     @provider.callback = lambda do |snapshot|
       @provider.fail_after_create = true if snapshot["owned_resources"].length > 2

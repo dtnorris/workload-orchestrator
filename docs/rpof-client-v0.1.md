@@ -10,12 +10,10 @@ discovers sibling repositories, or routes through `bin/lme-rpof`.
 AFW owns domain selection, compilation, provenance and interpretation. WLO owns
 execution policy. RPOF owns provider mechanics, fleet state and resource safety.
 
-This is migration step 3, a library interface for later WLO executors. It does
-not add an alternate `wlo run` command, change the execution-plan schema, or
-connect provider summaries to ExecutionStore. The current runner's zero-cost
-gate remains in force. Do not use this transport as a production paid campaign
-entry point: budget/guardian ownership, remote state integration and terminal
-cleanup must land before that integration is enabled (steps 5, 8 and 10).
+This began as the migration Step-3 seam. Step 8 now uses it only after the Step-5
+budget lifecycle and Step-6 capacity handoff are active. WLO creates a fresh
+provider directory for every WLO-owned attempt and reconciles the validated
+single-job summary into `ExecutionStore`.
 
 The base client has no fulfillment, budget, create, scale, admission or
 shutdown methods. The separate `RpofBudgetClient` and `PaidBudgetLifecycle` add
@@ -66,10 +64,12 @@ Missing/invalid JSON, unsupported versions, inconsistent fleet/job evidence,
 signals, exit 2 (rejected request) and other unexpected exits raise
 `WorkloadOrchestrator::Error`. There are no automatic retries.
 
-Calls block until the provider command exits, and capture its stdout/stderr.
-This client adds no deadline, heartbeat loop, signal policy or remote cleanup.
-Those belong to the future lifecycle owner. Provider resource safeguards are
-not proof that WLO already owns a complete paid execution lifecycle.
+Calls block until the provider command exits and capture its stdout/stderr.
+Step-8 callers pass the remaining original runtime as a finite timeout. The
+client also gives RPOF an inherited owner-liveness pipe: EOF interrupts RPOF,
+which cancels active workload process groups and persists interrupted evidence.
+The independent provider guardian and original deadline remain authoritative if
+the WLO host or transport is lost.
 
 ## Capability request
 
@@ -110,10 +110,9 @@ are not wire fields; a future executor must deliberately construct its request.
 
 `workdir` is canonicalized and must exist. `output_dir` must not already exist,
 including as an empty directory or symlink. The client creates it atomically
-before invoking RPOF and retains evidence on every outcome. This prevents a
-prior summary from masquerading as a new result and intentionally does not
-promise resume. Step 8 must define resume/attempt identity together with WLO
-claims and ExecutionStore before relaxing this rule.
+before invoking RPOF and retains evidence on every outcome. WLO resume never
+reuses this directory: an explicit retry creates the next WLO attempt and a new
+provider-attempt directory.
 
 The summary must account for every requested job exactly once, agree with its
 counts, and match the requested fleet ID/key. Provider statuses are preserved:

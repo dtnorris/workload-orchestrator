@@ -68,11 +68,25 @@ module WorkloadOrchestrator
         (state["retry_pending"] ||= {})[row.fetch("job_id")] = row.fetch("attempt")
       end
       reset_breaker!(state.fetch("circuit_breaker")) if acknowledge
+      clear_dispatch_halt!(state, selected)
       FileUtils.mkdir_p(control_dir)
       File.write(pause_path, "#{timestamp}\n")
       state["status"] = "paused"
       state["updated_at"] = timestamp
       write_json(execution_path, state)
+    end
+
+    def clear_dispatch_halt!(state, selected)
+      halt = state["dispatch_halt"]
+      return unless halt
+
+      matching = selected.any? do |job|
+        job.id == halt["job_id"] && metadata_for(job).fetch("attempt", 1) == halt["attempt"]
+      end
+      raise Error, "retry must include the failed job that stopped remote dispatch" unless matching
+
+      (state["dispatch_halt_history"] ||= []) << halt
+      state.delete("dispatch_halt")
     end
 
     def archive_attempt!(job)
@@ -82,7 +96,9 @@ module WorkloadOrchestrator
 
       relative = File.join("attempts", job.id, "attempt-#{attempt}")
       destination = File.join(output_dir, relative)
-      names = %w[metadata.json stdout.log stderr.log].select { |name| File.file?(File.join(run_dir(job), name)) }
+      names = (%w[metadata.json stdout.log stderr.log] + ["provider-attempt-#{attempt}"]).select do |name|
+        File.exist?(File.join(run_dir(job), name))
+      end
       if File.exist?(destination)
         validate_archive!(job, destination, names)
       else
@@ -95,10 +111,7 @@ module WorkloadOrchestrator
 
     def validate_archive!(job, destination, names)
       matches = File.directory?(destination) && Dir.children(destination).sort == names.sort
-      matches &&= names.all? do |name|
-        File.file?(File.join(destination, name)) &&
-          File.binread(File.join(destination, name)) == File.binread(File.join(run_dir(job), name))
-      end
+      matches &&= names.all? { |name| identical_entry?(File.join(run_dir(job), name), File.join(destination, name)) }
       raise Error, "attempt archive conflicts for #{job.id}; retained evidence was not overwritten" unless matches
     end
 
@@ -106,10 +119,20 @@ module WorkloadOrchestrator
       parent = File.dirname(destination)
       FileUtils.mkdir_p(parent)
       temporary = Dir.mktmpdir(".archive-", parent)
-      names.each { |name| FileUtils.cp(File.join(run_dir(job), name), File.join(temporary, name)) }
+      names.each { |name| FileUtils.cp_r(File.join(run_dir(job), name), File.join(temporary, name)) }
       File.rename(temporary, destination)
     ensure
       FileUtils.remove_entry(temporary) if temporary && File.directory?(temporary)
+    end
+
+    def identical_entry?(source, destination)
+      return File.binread(source) == File.binread(destination) if File.file?(source) && File.file?(destination)
+      return false unless File.directory?(source) && File.directory?(destination)
+
+      source_names = Dir.children(source).sort
+      source_names == Dir.children(destination).sort && source_names.all? do |name|
+        identical_entry?(File.join(source, name), File.join(destination, name))
+      end
     end
   end
 end

@@ -65,7 +65,7 @@ class PaidBudgetTest < Minitest::Test
     assert_raises(WorkloadOrchestrator::Error) do
       WorkloadOrchestrator::PaidBudget.new(declaration, plan_bytes: "exact plan bytes", execution_profile: changed)
     end
-    assert_raises(WorkloadOrchestrator::Error) { profile.ensure_runnable! }
+    assert_same profile, profile.ensure_runnable!
   end
 
   def test_rejects_missing_unknown_nonfinite_and_invalid_limits

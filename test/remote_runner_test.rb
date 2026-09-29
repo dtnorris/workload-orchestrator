@@ -1,0 +1,230 @@
+# frozen_string_literal: true
+
+require_relative "test_helper"
+
+class RemoteRunnerTest < Minitest::Test
+  class FakeLifecycle
+    attr_reader :checks
+
+    def initialize
+      @checks = 0
+    end
+
+    def check!
+      @checks += 1
+      { "state" => "ARMED" }
+    end
+  end
+
+  class FakeCapacitySession
+    attr_reader :calls, :outcomes, :lifecycle
+
+    def initialize(handoff)
+      @handoff = handoff
+      @calls = []
+      @outcomes = []
+      @lifecycle = FakeLifecycle.new
+    end
+
+    def with_capacity(authorize_paid:, resume:)
+      @calls << { authorize_paid: authorize_paid, resume: resume }
+      outcome = yield({ "remote-pool" => @handoff }, @lifecycle)
+      @outcomes << outcome
+      outcome.value
+    end
+  end
+
+  class FakeClient
+    attr_accessor :modes, :started, :release
+    attr_reader :requests
+
+    def initialize(modes = {})
+      @modes = modes
+      @requests = []
+    end
+
+    def dispatch(request:, workdir:, output_dir:, timeout_seconds:)
+      job = request.fetch("jobs").fetch(0)
+      @requests << request
+      @started << job.fetch("job_id") if @started
+      @release.pop if @release
+      mode = @modes.fetch(job.fetch("job_id"), :complete)
+      raise WorkloadOrchestrator::Error, "simulated transport loss" if mode == :transport
+
+      FileUtils.mkdir_p(File.join(output_dir, "jobs", job.fetch("job_id")))
+      File.write(File.join(output_dir, "jobs", job.fetch("job_id"), "stdout.log"), "remote stdout\n")
+      File.write(File.join(output_dir, "jobs", job.fetch("job_id"), "stderr.log"), "remote stderr\n")
+      failed = mode == :workload
+      infrastructure = mode == :infrastructure
+      row = unless infrastructure
+              {
+                "job_id" => job.fetch("job_id"), "status" => failed ? "failed" : "completed",
+                "exit_status" => failed ? 7 : 0,
+                "stdout_path" => File.join("jobs", job.fetch("job_id"), "stdout.log"),
+                "stderr_path" => File.join("jobs", job.fetch("job_id"), "stderr.log")
+              }
+            end
+      document = {
+        "contract_version" => WorkloadOrchestrator::RpofContract::DISPATCH_SUMMARY,
+        "fleet_key" => request.dig("target", "fleet_key"), "fleet_id" => "fleet-1",
+        "worker_indices" => request.dig("target", "worker_indices"),
+        "status" => infrastructure ? "infrastructure_failed" : failed ? "workload_failed" : "completed",
+        "job_count" => 1, "completed_count" => failed || infrastructure ? 0 : 1,
+        "failed_count" => failed ? 1 : 0, "not_started_count" => infrastructure ? 1 : 0,
+        "not_started_job_ids" => infrastructure ? [job.fetch("job_id")] : [],
+        "jobs" => row ? [row] : []
+      }
+      WorkloadOrchestrator::RpofClient::Result.new(
+        document: document, exit_status: document["status"] == "completed" ? 0 : 1,
+        stdout: "client stdout\n", stderr: "client stderr\n"
+      )
+    end
+  end
+
+  def setup
+    @root = Dir.mktmpdir("wlo-remote-runner-")
+    @workdir = File.join(@root, "work")
+    @output = File.join(@root, "output")
+    FileUtils.mkdir_p(@workdir)
+    @plan = remote_plan(%w[first second third])
+    @workers = WorkloadOrchestrator::WorkerSet.new({})
+    @handoff = {
+      "target" => { "fleet_key" => "pool-handle", "expected_fleet_id" => "fleet-1", "worker_indices" => [1] },
+      "deadline_at_utc" => (Time.now.utc + 60).iso8601
+    }
+  end
+
+  def teardown
+    FileUtils.remove_entry(@root)
+  end
+
+  def test_wlo_owns_remote_attempts_logs_jobs_and_explicit_failed_retry
+    client = FakeClient.new("second" => :workload)
+    session = FakeCapacitySession.new(@handoff)
+    assert_equal "workload_failed", runner(client, session).run
+    assert_equal %w[first second third], client.requests.map { |request| request.dig("jobs", 0, "job_id") }
+    assert client.requests.all? { |request| request.fetch("jobs").length == 1 }
+    failed = metadata("second")
+    assert_equal "failed", failed.fetch("status")
+    assert_equal 7, failed.fetch("exit_status")
+    assert_includes File.read(File.join(@output, "runs", "second", "stdout.log")), "remote stdout"
+    assert session.outcomes.first.retain_capacity
+
+    store.retry_failed!(all: false, job_ids: ["second"], reason: "fixed", acknowledge_circuit_breaker: false)
+    client.modes = {}
+    assert_equal "completed", runner(client, session).run(resume: true)
+    assert_equal 2, metadata("second").fetch("attempt")
+    assert File.directory?(File.join(@output, "attempts", "second", "attempt-1", "provider-attempt-1"))
+    assert_equal false, session.outcomes.last.retain_capacity
+    assert_equal [false, true], session.calls.map { |call| call.fetch(:resume) }
+  end
+
+  def test_infrastructure_failure_stops_dispatch_and_requires_explicit_retry
+    client = FakeClient.new("first" => :infrastructure)
+    session = FakeCapacitySession.new(@handoff)
+    assert_equal "infrastructure_failed", runner(client, session).run
+    assert_equal ["first"], client.requests.map { |request| request.dig("jobs", 0, "job_id") }
+    assert_raises(WorkloadOrchestrator::Error) { runner(client, session).run(resume: true) }
+
+    store.retry_failed!(all: false, job_ids: ["first"], reason: "transport repaired",
+                        acknowledge_circuit_breaker: false)
+    client.modes = {}
+    assert_equal "completed", runner(client, session).run(resume: true)
+    assert_equal({ "complete" => 3 }, compact_counts)
+  end
+
+  def test_transport_failure_stops_dispatch_and_retains_in_doubt_evidence
+    client = FakeClient.new("first" => :transport)
+    session = FakeCapacitySession.new(@handoff)
+
+    assert_equal "infrastructure_failed", runner(client, session).run
+    assert_equal ["first"], client.requests.map { |request| request.dig("jobs", 0, "job_id") }
+    assert_equal "remote_in_doubt", metadata("first").dig("evidence", "kind")
+    assert_includes metadata("first").fetch("error"), "simulated transport loss"
+    assert session.outcomes.first.retain_capacity
+  end
+
+  def test_pause_drains_active_remote_job_and_resume_uses_same_capacity_scope
+    client = FakeClient.new
+    client.started = Queue.new
+    client.release = Queue.new
+    session = FakeCapacitySession.new(@handoff)
+    subject = runner(client, session)
+    thread = Thread.new { subject.run }
+    assert_equal "first", client.started.pop
+    subject.store.pause!
+    client.release << true
+
+    assert_equal "paused", thread.value
+    assert_equal ["first"], client.requests.map { |request| request.dig("jobs", 0, "job_id") }
+    client.release = nil
+    assert_equal "completed", runner(client, session).run(resume: true)
+    assert_equal({ "complete" => 3 }, compact_counts)
+  end
+
+  def test_stale_remote_running_attempt_becomes_in_doubt_and_is_not_replayed
+    subject = runner(FakeClient.new, FakeCapacitySession.new(@handoff))
+    subject.store.prepare!
+    worker = WorkloadOrchestrator::Runner::RemoteWorker.new(name: "rpof:remote-pool:burst_1", index: 1)
+    subject.store.record_running!(job: @plan.jobs.first, worker: worker, environment_keys: [])
+    client = FakeClient.new
+    session = FakeCapacitySession.new(@handoff)
+
+    error = assert_raises(WorkloadOrchestrator::Error) { runner(client, session).run(resume: true) }
+    assert_includes error.message, "explicitly retry"
+    assert_empty client.requests
+    assert_equal "remote_in_doubt", metadata("first").dig("evidence", "kind")
+  end
+
+  private
+
+  def remote_plan(ids)
+    plan = {
+      "contract_version" => WorkloadOrchestrator::Plan::LOGICAL_CONTRACT_VERSION,
+      "plan_id" => "remote-fixture",
+      "failure_policy" => { "max_consecutive_failures" => 10, "max_total_failures" => 10 },
+      "pools" => [{
+        "pool_id" => "remote-pool", "requirements" => { "ollama" => {
+          "model" => "fixture:latest", "expected_digest" => "a" * 64,
+          "required_context_length" => 32_768, "require_fully_gpu_resident" => true
+        } }
+      }],
+      "jobs" => ids.map { |id| { "job_id" => id, "pool_id" => "remote-pool", "argv" => ["fixture", id] } }
+    }
+    profile = {
+      "contract_version" => WorkloadOrchestrator::ExecutionProfile::CONTRACT_VERSION,
+      "pools" => [{
+        "pool_id" => "remote-pool", "backend" => "rpof", "max_concurrency" => 1,
+        "min_workers" => 1, "desired_workers" => 1, "max_hourly_rate_usd" => 1.0
+      }],
+      "budget" => { "max_hourly_rate_usd" => 1.0, "max_total_cost_usd" => 2.0, "max_runtime_seconds" => 120 }
+    }
+    raw = JSON.pretty_generate(plan) + "\n"
+    WorkloadOrchestrator::ExecutionProfile.new(JSON.generate(profile)).bind(
+      WorkloadOrchestrator::Plan.new(raw)
+    )
+  end
+
+  def runner(client, session)
+    WorkloadOrchestrator::Runner.new(
+      plan: @plan, workers: @workers, workdir: @workdir, output_dir: @output,
+      out: StringIO.new, rpof_client: client, capacity_session: session
+    )
+  end
+
+  def store
+    WorkloadOrchestrator::ExecutionStore.new(
+      output_dir: @output, plan: @plan, workdir: @workdir,
+      workers_sha256: @workers.execution_sha256(@plan)
+    )
+  end
+
+  def metadata(id)
+    JSON.parse(File.read(File.join(@output, "runs", id, "metadata.json")))
+  end
+
+  def compact_counts
+    store.prepare!
+    store.counts.reject { |_key, value| value.zero? }
+  end
+end
