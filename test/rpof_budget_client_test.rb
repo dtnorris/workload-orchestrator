@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "paid_budget_test"
+require "minitest/mock"
 
 class RpofBudgetClientTest < Minitest::Test
   include PaidBudgetFixtures
@@ -95,8 +96,32 @@ class RpofBudgetClientTest < Minitest::Test
       File.write(#{marker.inspect}, Process.pid.to_s)
       sleep 60
     RUBY
-    client = WorkloadOrchestrator::RpofBudgetClient.new(executable: @executable, timeout_seconds: 0.5)
-    assert_raises(WorkloadOrchestrator::Error) { client.guardian_status(budget: make_budget) }
+    client = WorkloadOrchestrator::RpofBudgetClient.new(executable: @executable, timeout_seconds: 0.05)
+    real_popen3 = Open3.method(:popen3)
+    # Start the command's deadline only after the fixture has entered its hang.
+    # Otherwise a busy host can spend the entire deadline starting Ruby, and
+    # the test never observes a process whose termination it can verify.
+    Open3.stub(:popen3, lambda { |*args, **options, &block|
+      real_popen3.call(*args, **options) do |input, output, error, waiter|
+        startup_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+        until File.file?(marker)
+          flunk "fixture exited before writing its PID" if waiter.join(0)
+          if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= startup_deadline
+            begin
+              Process.kill("KILL", -waiter.pid)
+            rescue Errno::ESRCH
+              nil
+            end
+            flunk "fixture did not start within 5 seconds"
+          end
+          sleep 0.005
+        end
+        block.call(input, output, error, waiter)
+      end
+    }) do
+      error = assert_raises(WorkloadOrchestrator::Error) { client.guardian_status(budget: make_budget) }
+      assert_includes error.message, "timed out"
+    end
     pid = Integer(File.read(marker))
     assert_raises(Errno::ESRCH) { Process.kill(0, pid) }
   end
