@@ -3,7 +3,7 @@
 module WorkloadOrchestrator
   # Compares durable running-attempt bindings with DW-10's last accepted
   # registry checkpoint. It persists in-doubt state before returning a
-  # transition that a future scheduler may use to release occupancy.
+  # transition that the dynamic scheduler uses to release occupancy.
   class DynamicWorkerLossReconciler
     attr_reader :store
 

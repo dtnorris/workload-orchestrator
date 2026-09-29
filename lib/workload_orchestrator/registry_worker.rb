@@ -2,7 +2,7 @@
 
 module WorkloadOrchestrator
   # Immutable, provider-neutral worker capability record from a validated
-  # dynamic-worker-registry snapshot. It is not yet wired into execution.
+  # dynamic-worker-registry snapshot, consumed by dynamic scheduling.
   class RegistryWorker
     attr_reader :registry_id, :registry_revision, :worker_id, :generation_id,
                 :endpoint, :state, :labels, :capabilities, :gpu_id,

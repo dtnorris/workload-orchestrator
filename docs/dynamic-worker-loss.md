@@ -51,7 +51,7 @@ The transition order is:
 1. write failed/in-doubt attempt metadata and evidence;
 2. write the execution dispatch halt;
 3. rebuild derived job state;
-4. return the persisted transition to the scheduler integration seam.
+4. return the persisted transition to the dynamic scheduler.
 
 The scheduler may release occupancy only after the reconciler returns a
 `recorded_in_doubt` transition. Resume repairs a dispatch halt if a crash

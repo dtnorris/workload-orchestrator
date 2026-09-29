@@ -38,6 +38,9 @@ module WorkloadOrchestrator
       @worker_registry_clock = worker_registry_clock
       @worker_registry_sleeper = worker_registry_sleeper
       @dynamic_schedule_mutex = Mutex.new
+      @dynamic_wait_mutex = Mutex.new
+      @dynamic_wait_condition = ConditionVariable.new
+      @dynamic_activity_pending = false
       @dynamic_threads = []
       @remote_halt_mutex = Mutex.new
       @remote_halted = false
@@ -102,7 +105,7 @@ module WorkloadOrchestrator
         checkpoint_path: File.join(store.output_dir, "dynamic-workers", "checkpoint.json"),
         clock: @worker_registry_clock,
         interval_seconds: @worker_poll_interval,
-        sleeper: @worker_registry_sleeper
+        sleeper: @worker_registry_sleeper || method(:dynamic_poll_sleep)
       )
       @worker_loss_reconciler ||= DynamicWorkerLossReconciler.new(store: store)
       worker_loss_reconciler.reconcile!(worker_registry_poller)
@@ -168,6 +171,8 @@ module WorkloadOrchestrator
           attempt: attempt, status: "failed", exit_status: nil, error: e.message
         )
       end
+    ensure
+      signal_dynamic_activity
     end
 
     def record_dynamic_result(job, attempt, stdout, stderr, status)
@@ -182,6 +187,34 @@ module WorkloadOrchestrator
 
     def join_dynamic_threads
       @dynamic_threads.each(&:value)
+    end
+
+    def signal_dynamic_activity
+      @dynamic_wait_mutex.synchronize do
+        @dynamic_activity_pending = true
+        @dynamic_wait_condition.broadcast
+      end
+    end
+
+    def dynamic_poll_sleep(seconds, stop)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
+      @dynamic_wait_mutex.synchronize do
+        if @dynamic_activity_pending
+          @dynamic_activity_pending = false
+          return
+        end
+
+        until stop.call
+          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          break unless remaining.positive?
+
+          @dynamic_wait_condition.wait(@dynamic_wait_mutex, [remaining, 0.1].min)
+          next unless @dynamic_activity_pending
+
+          @dynamic_activity_pending = false
+          break
+        end
+      end
     end
 
     def run_with_capacity(resume)

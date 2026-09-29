@@ -117,6 +117,176 @@ class DynamicSchedulingRunnerTest < Minitest::Test
     assert_equal ["later"], calls
   end
 
+  def test_incompatible_ready_worker_keeps_execution_waiting_until_paused
+    plan = build_plan(pools: [pool("qwen35")], jobs: [job("qwen-job", "qwen35")])
+    source = SequenceSource.new(snapshot(
+                                  revision: 1,
+                                  workers: [worker_record("gemma-worker", "gemma")]
+                                ))
+    waits = []
+    observed_statuses = []
+    runner = nil
+    sleeper = lambda do |seconds, _stop|
+      waits << seconds
+      observed_statuses << runner.store.status
+      runner.store.pause! if waits.length == 2
+    end
+    executor = ->(*) { raise "incompatible work must not execute" }
+    runner = build_runner(plan, source, executor: executor, sleeper: sleeper)
+
+    assert_equal "paused", runner.run
+    assert_equal 2, source.calls
+    assert_equal [0.001, 0.001], waits
+    assert_equal ["running", "running"], observed_statuses
+    assert_equal({ "pending" => 1 }, runner.store.counts)
+    assert_nil runner.store.metadata_for(plan.jobs.first)
+  end
+
+  def test_partial_capacity_finishes_eligible_work_and_waits_for_later_worker
+    plan = build_plan(
+      pools: [pool("qwen"), pool("gemma")],
+      jobs: [job("qwen-job", "qwen"), job("gemma-job", "gemma")]
+    )
+    qwen = worker_record("qwen-worker", "qwen")
+    gemma = worker_record("gemma-worker", "gemma")
+    source = SequenceSource.new(
+      snapshot(revision: 1, workers: [qwen]),
+      snapshot(revision: 2, published_at: "2030-01-01T00:00:20Z", workers: [qwen]),
+      snapshot(revision: 3, published_at: "2030-01-01T00:00:40Z", workers: [qwen, gemma])
+    )
+    calls = []
+    runner = nil
+    observations = []
+    executor = lambda do |_environment, *argv, **_options|
+      calls << argv.last
+      command_result
+    end
+    sleeper = lambda do |*_args|
+      Thread.pass
+      sleep(0.001) while runner.store.counts["running"].positive?
+      observations << runner.store.counts
+    end
+    runner = build_runner(plan, source, executor: executor, sleeper: sleeper)
+
+    assert_equal "completed", runner.run
+    assert_equal 3, source.calls
+    assert_equal %w[qwen-job gemma-job], calls
+    assert_equal({ "complete" => 1, "pending" => 1 }, observations.first)
+    assert_includes observations, { "complete" => 2 }
+  end
+
+  def test_resume_reuses_execution_and_checkpoint_then_schedules_later_capacity
+    plan = build_plan(pools: [pool("qwen")], jobs: [job("later", "qwen")])
+    first = nil
+    first = build_runner(
+      plan,
+      SequenceSource.new(snapshot(revision: 1, workers: [])),
+      executor: ->(*) { raise "work must not execute before capacity exists" },
+      sleeper: ->(*) { first.store.pause! }
+    )
+    assert_equal "paused", first.run
+    original = JSON.parse(File.read(File.join(@output, "execution.json")))
+
+    calls = []
+    resumed = nil
+    executor = lambda do |_environment, *argv, **_options|
+      calls << argv.last
+      command_result
+    end
+    sleeper = lambda do |*_args|
+      Thread.pass
+      sleep(0.001) if resumed.store.counts["running"].positive?
+    end
+    resumed = build_runner(
+      plan,
+      SequenceSource.new(snapshot(
+                           revision: 2,
+                           published_at: "2030-01-01T00:00:20Z",
+                           workers: [worker_record("qwen-worker", "qwen")]
+                         )),
+      executor: executor,
+      sleeper: sleeper
+    )
+
+    assert_equal "completed", resumed.run(resume: true)
+    current = JSON.parse(File.read(File.join(@output, "execution.json")))
+    assert_equal ["later"], calls
+    assert_equal original.fetch("created_at"), current.fetch("created_at")
+    assert_equal original.fetch("plan_sha256"), current.fetch("plan_sha256")
+    assert_equal 1, resumed.store.metadata_for(plan.jobs.first).fetch("attempt")
+    assert_equal 2, JSON.parse(File.read(File.join(@output, "dynamic-workers/checkpoint.json"))).fetch("revision")
+  end
+
+  def test_attempt_completion_wakes_default_poll_sleep_before_the_interval
+    plan = build_plan(
+      pools: [pool("model")],
+      jobs: [job("first", "model"), job("second", "model")]
+    )
+    source = SequenceSource.new(snapshot(
+                                  revision: 1,
+                                  workers: [worker_record("worker", "model")]
+                                ))
+    calls = []
+    executor = lambda do |_environment, *argv, **_options|
+      calls << argv.last
+      command_result
+    end
+    runner = build_runner(
+      plan, source, executor: executor, sleeper: nil, poll_interval: 2.0
+    )
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+    assert_equal "completed", runner.run
+
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+    assert_equal %w[first second], calls
+    assert_operator elapsed, :<, 1.0
+  end
+
+  def test_activity_completed_before_idle_wait_skips_the_interval
+    plan = build_plan(pools: [pool("model")], jobs: [job("job", "model")])
+    runner = build_runner(
+      plan,
+      SequenceSource.new(snapshot(revision: 1, workers: [])),
+      executor: ->(*) { command_result },
+      sleeper: nil,
+      poll_interval: 60.0
+    )
+    runner.send(:signal_dynamic_activity)
+    stop_calls = 0
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+    runner.send(:dynamic_poll_sleep, 60.0, -> { stop_calls += 1; false })
+
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+    assert_equal 0, stop_calls
+    assert_operator elapsed, :<, 0.1
+  end
+
+  def test_dynamic_executor_error_is_terminal_and_wakes_polling
+    plan = build_plan(pools: [pool("model")], jobs: [job("job", "model")])
+    source = SequenceSource.new(snapshot(
+                                  revision: 1,
+                                  workers: [worker_record("worker", "model")]
+                                ))
+    runner = nil
+    sleeper = lambda do |*_args|
+      Thread.pass
+      sleep(0.001) if runner.store.counts["running"].positive?
+    end
+    runner = build_runner(
+      plan, source,
+      executor: ->(*) { raise IOError, "simulated executor failure" },
+      sleeper: sleeper
+    )
+
+    assert_equal "workload_failed", runner.run
+    metadata = runner.store.metadata_for(plan.jobs.first)
+    assert_equal "failed", metadata.fetch("status")
+    assert_equal "simulated executor failure", metadata.fetch("error")
+    assert_includes File.read(File.join(@output, "runs/job/stderr.log")), "IOError"
+  end
+
   def test_new_worker_receives_work_while_existing_worker_remains_busy
     plan = build_plan(
       pools: [pool("model-a"), pool("model-b")],
@@ -371,7 +541,7 @@ class DynamicSchedulingRunnerTest < Minitest::Test
 
   private
 
-  def build_runner(plan, source, executor:, sleeper:)
+  def build_runner(plan, source, executor:, sleeper:, poll_interval: 0.001)
     WorkloadOrchestrator::Runner.new(
       plan: plan,
       workers: WorkloadOrchestrator::WorkerSet.new({}),
@@ -381,7 +551,7 @@ class DynamicSchedulingRunnerTest < Minitest::Test
       worker_source: source,
       worker_registry_clock: -> { NOW },
       worker_registry_sleeper: sleeper,
-      worker_poll_interval: 0.001,
+      worker_poll_interval: poll_interval,
       command_executor: executor
     )
   end

@@ -40,6 +40,10 @@ leases and cost safeguards, provider scaling/replacement and opaque dispatch.
 WLO's paid execution calls those provider primitives within its own guarded
 budget and lifecycle state.
 
+Dynamic executions retain the same execution ownership while idle. See
+[dynamic-polling.md](dynamic-polling.md) for bounded polling,
+waiting-for-capacity semantics, and scheduler-loop stop and resume rules.
+
 ## Execution boundary
 
 Jobs are opaque to WLO. Each job supplies a direct argument vector and optional
