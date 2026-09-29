@@ -70,6 +70,10 @@ module WorkloadOrchestrator
 
     def run_locked(resume, acknowledge_circuit_breaker)
       prepare_resume!(resume, acknowledge_circuit_breaker)
+      if dynamic_workers?
+        @live_display = LiveExecutionDisplay.new(plan: plan, output: store.output_dir, out: @out)
+        @live_display.refresh(resume: resume)
+      end
       return finalize_and_report if store.paused?
 
       raise Error, "circuit breaker is tripped; resume with explicit acknowledgement" if store.circuit_tripped?
@@ -100,6 +104,7 @@ module WorkloadOrchestrator
       return finalize_and_report(resource_cleanup_pending: false) if (counts["pending"] + counts["running"]).zero?
 
       store.start!
+      @live_display.refresh
       @worker_registry_poller ||= WorkerRegistryPoller.new(
         source: @worker_source,
         checkpoint_path: File.join(store.output_dir, "dynamic-workers", "checkpoint.json"),
@@ -112,11 +117,13 @@ module WorkloadOrchestrator
       @dynamic_scheduler ||= DynamicScheduler.new(plan: plan, store: store) if plan.priority_scheduling?
       worker_registry_poller.run(stop: method(:stop_dynamic_polling?)) do |poller|
         worker_loss_reconciler.reconcile!(poller)
+        @live_display.accept_workers(poller.current_workers)
         if dynamic_scheduler
           schedule_dynamic_assignments(
             poller.ready_workers, current_workers: poller.current_workers
           )
         end
+        @dynamic_schedule_mutex.synchronize { @live_display.refresh }
       end
       join_dynamic_threads
       store.record_interruption!(@interrupt_signal) if @interrupt_signal
@@ -128,6 +135,7 @@ module WorkloadOrchestrator
       else
         store.record_dispatch_halt!(kind: "worker_registry", error: e.message) unless store.dispatch_halted?
       end
+      @live_display.refresh
       raise
     ensure
       @dynamic_threads.clear
@@ -153,8 +161,7 @@ module WorkloadOrchestrator
 
     def launch_dynamic_assignment(assignment, attempt)
       job = assignment.job
-      worker = assignment.worker
-      @out.puts "[#{@job_positions.fetch(job.id)}/#{plan.jobs.length}] [#{worker.worker_id}] #{job.id}"
+      @live_display.refresh
       @dynamic_threads << Thread.new do
         JobClaim.new(output_dir: store.output_dir).synchronize(job.id) do
           execute_dynamic_command(job, attempt)
@@ -175,6 +182,7 @@ module WorkloadOrchestrator
         store.record_dynamic_terminal!(
           attempt: attempt, status: "failed", exit_status: nil, error: e.message
         )
+        @live_display.refresh
       end
     ensure
       signal_dynamic_activity
@@ -187,6 +195,7 @@ module WorkloadOrchestrator
         store.record_dynamic_terminal!(
           attempt: attempt, status: terminal, exit_status: status.exitstatus
         )
+        @live_display.refresh
       end
     end
 
@@ -627,6 +636,7 @@ module WorkloadOrchestrator
 
     def finalize_and_report(resource_cleanup_pending: rpof?)
       status = store.finish!(resource_cleanup_pending: resource_cleanup_pending)
+      @live_display&.refresh
       counts = store.counts
       @out.puts "Execution: #{status}"
       @out.puts "Jobs: #{format_counts(counts)}"
