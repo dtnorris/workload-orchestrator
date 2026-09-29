@@ -24,6 +24,17 @@ class DynamicRunnerTest < Minitest::Test
     end
   end
 
+  class CallbackSource < WorkloadOrchestrator::WorkerSource
+    def initialize(&callback)
+      super()
+      @callback = callback
+    end
+
+    def latest_snapshot
+      @callback.call
+    end
+  end
+
   def setup
     @tmp = Dir.mktmpdir("wlo-dynamic-runner-")
     @workdir = File.join(@tmp, "work")
@@ -103,6 +114,9 @@ class DynamicRunnerTest < Minitest::Test
     assert_equal "infrastructure_failed", runner.store.status
     assert_equal "worker_registry", runner.store.dispatch_halt.fetch("kind")
     assert_equal({ "pending" => 1 }, compact_counts)
+
+    resume_error = assert_raises(WorkloadOrchestrator::Error) { runner.run(resume: true) }
+    assert_includes resume_error.message, "worker registry polling is halted"
   end
 
   def test_resume_uses_checkpoint_and_rejects_registry_rollback
@@ -122,6 +136,67 @@ class DynamicRunnerTest < Minitest::Test
 
     assert_includes error.message, "rolled back"
     assert_equal "worker_registry", resumed.store.dispatch_halt.fetch("kind")
+  end
+
+  def test_terminal_dynamic_work_finishes_without_polling
+    source = SequenceSource.new(snapshot(revision: 7, workers: []))
+    runner = build_runner(source, ->(*) { raise "unexpected sleep" })
+    runner.store.prepare!
+    started_at = runner.store.record_running!(
+      job: @plan.jobs.first,
+      worker: WorkloadOrchestrator::Worker.new("completed-worker", "type" => "command"),
+      environment_keys: []
+    )
+    runner.store.record_terminal!(
+      job: @plan.jobs.first,
+      status: "complete",
+      started_at: started_at,
+      exit_status: 0
+    )
+
+    assert_equal "completed", runner.run
+    assert_equal 0, source.calls
+    assert_nil runner.worker_registry_poller
+  end
+
+  def test_interrupt_stops_polling_and_is_recorded
+    source = SequenceSource.new(snapshot(revision: 7, workers: []))
+    runner = nil
+    sleeper = lambda do |*_args|
+      runner.instance_variable_set(:@interrupt_signal, "TERM")
+    end
+    runner = build_runner(source, sleeper)
+
+    assert_equal "interrupted", runner.run
+    assert_equal "TERM", JSON.parse(File.read(File.join(@output, "execution.json"))).dig("interruption", "signal")
+  end
+
+  def test_registry_error_after_interrupt_records_interruption
+    runner = nil
+    source = CallbackSource.new do
+      runner.instance_variable_set(:@interrupt_signal, "TERM")
+      snapshot(revision: 7, expires_at: NOW.iso8601, workers: [])
+    end
+    runner = build_runner(source, ->(*) { raise "unexpected sleep" })
+
+    error = assert_raises(WorkloadOrchestrator::Error) { runner.run }
+
+    assert_includes error.message, "expired"
+    assert_equal "interrupted", runner.store.status
+  end
+
+  def test_registry_error_does_not_replace_an_existing_dispatch_halt
+    runner = nil
+    source = CallbackSource.new do
+      runner.store.record_dispatch_halt!(kind: "worker_registry", error: "existing evidence")
+      snapshot(revision: 7, expires_at: NOW.iso8601, workers: [])
+    end
+    runner = build_runner(source, ->(*) { raise "unexpected sleep" })
+
+    error = assert_raises(WorkloadOrchestrator::Error) { runner.run }
+
+    assert_includes error.message, "expired"
+    assert_equal "existing evidence", runner.store.dispatch_halt.fetch("error")
   end
 
   private
