@@ -92,6 +92,7 @@ class ExecutionReportTest < Minitest::Test
     assert_includes text, "Last run elapsed: 7s"
     assert_includes text, "Running: job-2 worker=local attempt=2 exit=nil"
     assert_includes text, "Failed: job-1 worker=local attempt=2 exit=3"
+    assert_includes text, "reason=worker_disappeared"
     assert_includes text, "No executor holds the lock; running records may be stale."
     assert_includes text, "Last manager: PID 123 | recorded error | exit=1"
     assert_includes text, "Manager log: #{record.fetch('log_path')}"
@@ -140,8 +141,10 @@ class ExecutionReportTest < Minitest::Test
 
   def write_jobs(statuses)
     rows = statuses.each_with_index.map do |status, index|
-      { "job_id" => "job-#{index}", "status" => status, "worker" => "local", "attempt" => 2,
-        "exit_status" => status == "failed" ? 3 : nil }
+      row = { "job_id" => "job-#{index}", "status" => status, "worker" => "local", "attempt" => 2,
+              "exit_status" => status == "failed" ? 3 : nil }
+      row["failure_reason"] = "worker_disappeared" if status == "failed"
+      row
     end
     write_json("jobs.json", "jobs" => rows)
   end

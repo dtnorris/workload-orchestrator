@@ -66,6 +66,30 @@ class CliTest < Minitest::Test
     assert_includes out, "Scheduling: group-major (2 groups)"
   end
 
+  def test_plan_reports_v03_priority_scheduling
+    profile = write_local_execution_profile
+    cases = {
+      "grouped" => [
+        [job("a", code: "exit 0", group_id: "adventure-a"),
+         job("b", code: "exit 0", group_id: "adventure-b")],
+        "Scheduling: work-conserving priority (2 reporting groups)"
+      ],
+      "ungrouped" => [[job("a", code: "exit 0"), job("b", code: "exit 0")],
+                      "Scheduling: work-conserving priority"]
+    }
+
+    cases.each do |name, (jobs, expected)|
+      plan = write_priority_plan(name, jobs)
+      code, out, = run_cli(
+        "plan", plan, "--workdir", @workdir, "--workers-config", @workers_path,
+        "--execution-profile", profile
+      )
+
+      assert_equal 0, code
+      assert_includes out, expected
+    end
+  end
+
   def test_pause_and_resume_commands
     plan = WorkloadOrchestrator::Plan.load(@plan_path)
     store = WorkloadOrchestrator::ExecutionStore.new(output_dir: @output, plan: plan, workdir: @workdir)
@@ -85,6 +109,25 @@ class CliTest < Minitest::Test
   end
 
   private
+
+  def write_priority_plan(name, jobs)
+    path = write_plan(@tmp, jobs: jobs, name: "#{name}.json")
+    document = JSON.parse(File.read(path))
+    document["contract_version"] = WorkloadOrchestrator::Plan::PRIORITY_CONTRACT_VERSION
+    document["pools"] = [{ "pool_id" => "local-pool" }]
+    File.write(path, "#{JSON.pretty_generate(document)}\n")
+    path
+  end
+
+  def write_local_execution_profile
+    path = File.join(@tmp, "execution-profile.json")
+    File.write(path, JSON.generate(
+      "contract_version" => "wlo-execution-profile/v0.1",
+      "pools" => [{ "pool_id" => "local-pool", "backend" => "local",
+                    "worker_names" => ["local"], "max_concurrency" => 1 }]
+    ))
+    path
+  end
 
   def run_cli(*argv)
     out = StringIO.new
