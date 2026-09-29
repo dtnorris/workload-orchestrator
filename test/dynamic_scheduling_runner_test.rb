@@ -125,6 +125,13 @@ class DynamicSchedulingRunnerTest < Minitest::Test
     assert_equal "running", metadata.fetch("status")
     assert_equal 1, metadata.fetch("attempt")
     assert_equal "worker-a", metadata.fetch("worker")
+    snapshot = metadata.fetch("worker_snapshot")
+    assert_equal worker_a.fetch("labels"), snapshot.fetch("labels")
+    assert_equal worker_a.fetch("capabilities"), snapshot.fetch("capabilities")
+    assert_equal worker_a.fetch("capability_fingerprint"), snapshot.fetch("capability_fingerprint")
+    assert_equal environment.fetch("AF_OLLAMA_BASE_URL"), snapshot.fetch("endpoint")
+    assert_equal "READY", snapshot.fetch("state")
+    assert_equal 1, snapshot.fetch("registry_revision")
     identity = metadata.fetch("worker_execution_identity")
     assert_equal "dynamic-runner-registry", identity.fetch("registry_id")
     assert_equal worker_a.fetch("generation_id"), identity.fetch("generation_id")
@@ -626,8 +633,14 @@ class DynamicSchedulingRunnerTest < Minitest::Test
     runner = build_runner(plan, source, executor: executor, sleeper: sleeper)
     runner.store.prepare!
     runner.store.record_dynamic_running!(job: plan.jobs.first, worker: worker, environment_keys: [])
+    before = File.binread(File.join(@output, "runs/running/metadata.json"))
 
     assert_equal "paused", runner.run(resume: true)
+    assert_equal before, File.binread(File.join(@output, "runs/running/metadata.json"))
+    reloaded = WorkloadOrchestrator::ExecutionStore.new(output_dir: @output, plan: plan, workdir: @workdir)
+    reloaded.prepare!
+    assert_equal JSON.parse(before).fetch("worker_snapshot"),
+                 reloaded.dynamic_running_attempts.first.worker_binding.worker_snapshot
     assert_empty calls
     assert_equal "running", runner.store.metadata_for(plan.jobs.first).fetch("status")
     assert_equal identity_hash(worker),

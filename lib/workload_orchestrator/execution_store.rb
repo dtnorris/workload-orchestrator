@@ -430,7 +430,33 @@ module WorkloadOrchestrator
     end
 
     def write_json(path, value)
+      protect_worker_evidence!(path, value)
       atomic_write(path, "#{JSON.pretty_generate(value)}\n")
+    end
+
+    # All metadata writes preserve evidence for the same attempt. New attempts
+    # may replace the current row only after the retry path has archived it.
+    def protect_worker_evidence!(path, value)
+      return unless File.basename(path) == "metadata.json" && File.file?(path)
+
+      prior = read_json(path, "job metadata")
+      return unless prior.key?("worker_execution_identity")
+      if prior["attempt"] != value["attempt"]
+        archive = File.join(output_dir, "attempts", prior.fetch("job_id"),
+                            "attempt-#{prior.fetch("attempt")}", "metadata.json")
+        current_path = File.join(output_dir, "runs", prior.fetch("job_id"), "metadata.json")
+        authorized = read_execution.fetch("retry_pending", {})[prior.fetch("job_id")] == prior.fetch("attempt")
+        unless path == current_path && authorized && value["attempt"] == prior.fetch("attempt") + 1 &&
+               File.file?(archive) && read_json(archive, "archived job metadata") == prior
+          raise Error, "dynamic attempt evidence must be archived before replacement"
+        end
+        return
+      end
+
+      keys = %w[worker_execution_identity worker_registry_binding worker_snapshot]
+      return if keys.all? { |key| prior[key] == value[key] }
+
+      raise Error, "immutable dynamic worker evidence conflicts with recorded attempt"
     end
 
     def atomic_write(path, content)

@@ -17,6 +17,9 @@ module WorkloadOrchestrator
       attempt_id = nil
       with_lock do
         prior = metadata_for(job)
+        if worker_binding && prior && prior.fetch("status") != "pending"
+          raise Error, "dynamic claim requires pending work; existing attempt evidence was retained"
+        end
         attempt_id = prior ? Integer(prior.fetch("attempt", 0)) + 1 : 1
         document = {
           "job_id" => job.id,

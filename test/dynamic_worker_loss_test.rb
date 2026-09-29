@@ -60,6 +60,81 @@ class DynamicWorkerLossTest < Minitest::Test
     assert_equal attempt.worker_binding.tuple, poller.current_workers.first.execution_identity
   end
 
+  def test_snapshot_is_complete_and_recursively_immutable
+    poller = poller_for(snapshot(revision: 7, workers: [@worker_a]))
+    poller.poll_once
+    worker = poller.current_workers.first
+    attempt = start_attempt(worker)
+    expected = identity_hash(@worker_a).merge(
+      "registry_revision" => 7,
+      "registry_snapshot_sha256" => poller.registry.sha256,
+      "published_at" => worker.published_at.iso8601,
+      "expires_at" => worker.expires_at.iso8601,
+      "state" => "READY",
+      "labels" => @worker_a.fetch("labels"),
+      "capabilities" => @worker_a.fetch("capabilities")
+    )
+
+    assert_equal expected, metadata_for.fetch("worker_snapshot")
+    assert_equal expected, attempt.worker_binding.worker_snapshot
+    assert_raises(FrozenError) { attempt.worker_binding.worker_snapshot["labels"] << "changed" }
+    assert_raises(FrozenError) do
+      attempt.worker_binding.worker_snapshot.dig("capabilities", "ollama", "models", 0)["model"].replace("changed")
+    end
+    assert_equal expected, WorkloadOrchestrator::DynamicWorkerBinding.from_metadata(metadata_for).worker_snapshot
+  end
+
+  def test_conflicting_metadata_writes_are_rejected_before_changing_bytes
+    poller = poller_for(snapshot(revision: 7, workers: [@worker_a]))
+    poller.poll_once
+    start_attempt(poller.current_workers.first)
+    path = File.join(@output, "runs/job-1/metadata.json")
+    before = File.binread(path)
+    unchanged = metadata_for
+    @store.send(:write_json, path, unchanged)
+    assert_equal before, File.binread(path)
+
+    %w[worker_snapshot worker_execution_identity worker_registry_binding].each do |key|
+      conflicting = deep_copy(unchanged)
+      conflicting.delete(key)
+      assert_raises(WorkloadOrchestrator::Error) { @store.send(:write_json, path, conflicting) }
+      assert_equal before, File.binread(path)
+    end
+    conflicting = deep_copy(unchanged)
+    conflicting["worker_snapshot"]["labels"] << "changed"
+    assert_raises(WorkloadOrchestrator::Error) { @store.send(:write_json, path, conflicting) }
+    assert_equal before, File.binread(path)
+    conflicting = deep_copy(unchanged).merge("attempt" => 2)
+    assert_raises(WorkloadOrchestrator::Error) { @store.send(:write_json, path, conflicting) }
+    assert_equal before, File.binread(path)
+    assert_raises(WorkloadOrchestrator::Error) { start_attempt(poller.current_workers.first) }
+    assert_equal before, File.binread(path)
+  end
+
+  def test_legacy_binding_loads_without_fabricating_snapshot
+    poller = poller_for(snapshot(revision: 7, workers: [@worker_a]))
+    poller.poll_once
+    binding = WorkloadOrchestrator::DynamicWorkerBinding.from_worker(poller.current_workers.first)
+    legacy = binding.metadata.reject { |key, _| key == "worker_snapshot" }
+    loaded = WorkloadOrchestrator::DynamicWorkerBinding.from_metadata(legacy)
+
+    assert_nil loaded.worker_snapshot
+    assert_equal legacy, loaded.metadata
+    assert_equal binding.tuple, loaded.tuple
+  end
+
+  def test_snapshot_conflicting_with_binding_is_rejected
+    poller = poller_for(snapshot(revision: 7, workers: [@worker_a]))
+    poller.poll_once
+    start_attempt(poller.current_workers.first)
+    document = metadata_for
+    document["worker_snapshot"]["endpoint"] = "http://wrong.invalid:11434"
+
+    assert_raises(WorkloadOrchestrator::Error) do
+      WorkloadOrchestrator::DynamicWorkerBinding.from_metadata(document)
+    end
+  end
+
   def test_idle_disappearance_only_removes_capacity
     poller = poller_for(
       snapshot(revision: 7, workers: [@worker_a]),
@@ -85,8 +160,10 @@ class DynamicWorkerLossTest < Minitest::Test
     )
     poller.poll_once
     start_attempt(poller.current_workers.first)
+    original_snapshot = metadata_for.fetch("worker_snapshot")
     poller.poll_once
 
+    assert_equal original_snapshot, metadata_for.fetch("worker_snapshot")
     assert_empty reconciler_for.reconcile!(poller)
     assert_equal "running", metadata_for.fetch("status")
     assert_empty poller.ready_workers
@@ -163,9 +240,13 @@ class DynamicWorkerLossTest < Minitest::Test
       snapshot(revision: 8, published_at: "2030-01-01T00:00:20Z", workers: [changed])
     )
 
+    original_snapshot = metadata_for.fetch("worker_snapshot")
     transition = reconciler_for.reconcile!(poller).fetch(0)
     evidence = metadata_for.fetch("evidence")
 
+    assert_equal original_snapshot, metadata_for.fetch("worker_snapshot")
+    assert_equal @worker_a.fetch("labels"), original_snapshot.fetch("labels")
+    assert_equal @worker_a.fetch("capabilities"), original_snapshot.fetch("capabilities")
     assert_equal "worker_capability_changed", transition.fetch("reason")
     assert_equal @worker_a.fetch("capability_fingerprint"),
                  evidence.dig("worker_execution_identity", "capability_fingerprint")
@@ -188,7 +269,16 @@ class DynamicWorkerLossTest < Minitest::Test
 
     assert_equal 2, retry_attempt.attempt_id
     assert_equal identity_hash(replacement), metadata_for.fetch("worker_execution_identity")
+    archive_path = File.join(@output, "attempts/job-1/attempt-1/metadata.json")
+    archive_bytes = File.binread(archive_path)
+    conflicting_archive = deep_copy(archive).merge("attempt" => 2)
+    assert_raises(WorkloadOrchestrator::Error) { @store.send(:write_json, archive_path, conflicting_archive) }
+    assert_equal archive_bytes, File.binread(archive_path)
     assert_equal old_metadata, archive
+    assert_equal old_attempt.worker_binding.worker_snapshot, archive.fetch("worker_snapshot")
+    assert_equal retry_attempt.worker_binding.worker_snapshot, metadata_for.fetch("worker_snapshot")
+    refute_equal archive.fetch("worker_snapshot"), metadata_for.fetch("worker_snapshot")
+    assert_equal archive.dig("worker_snapshot", "endpoint"), metadata_for.dig("worker_snapshot", "endpoint")
     assert_equal "dynamic_worker_loss_in_doubt", archive.dig("evidence", "kind")
     refute @store.dispatch_halted?
 
@@ -198,6 +288,7 @@ class DynamicWorkerLossTest < Minitest::Test
     assert_equal "running", metadata_for.fetch("status")
     archived_after_late = JSON.parse(File.read(File.join(@output, "attempts/job-1/attempt-1/metadata.json")))
     assert_equal "late_dynamic_attempt_terminal", archived_after_late.dig("late_evidence", 0, "kind")
+    assert_equal old_attempt.worker_binding.worker_snapshot, archived_after_late.fetch("worker_snapshot")
   end
 
   def test_completion_recorded_first_wins_over_later_disappearance
