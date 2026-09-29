@@ -28,9 +28,9 @@ module WorkloadOrchestrator
       budget.validate_snapshot!(snapshot)
     end
 
-    def budget_status(budget:)
+    def budget_status(budget:, timeout_seconds: @timeout_seconds)
       # Evaluate persists expired/failed state; a status-only read does not.
-      snapshot = budget_command("evaluate", *identity_arguments(budget))
+      snapshot = budget_command("evaluate", *identity_arguments(budget), timeout_seconds: timeout_seconds)
       budget.validate_snapshot!(snapshot)
     end
 
@@ -56,8 +56,8 @@ module WorkloadOrchestrator
       ["--budget-id", budget.identity.fetch("budget_id"), "--plan-sha256", budget.identity.fetch("plan_sha256")]
     end
 
-    def budget_command(*arguments)
-      stdout, stderr, status = capture_budget(arguments)
+    def budget_command(*arguments, timeout_seconds: @timeout_seconds)
+      stdout, stderr, status = capture_budget(arguments, timeout_seconds: timeout_seconds)
       raise Error, "RPOF budget command failed: #{stderr.strip}" unless status.success?
 
       document = JSON.parse(stdout)
@@ -68,8 +68,8 @@ module WorkloadOrchestrator
       raise Error, "RPOF budget command failed: #{e.message}"
     end
 
-    def capture_budget(arguments)
-      capture_process(["budget", *arguments], timeout_seconds: @timeout_seconds)
+    def capture_budget(arguments, timeout_seconds: @timeout_seconds)
+      capture_process(["budget", *arguments], timeout_seconds: timeout_seconds)
     end
 
     def capture_process(arguments, timeout_seconds:)

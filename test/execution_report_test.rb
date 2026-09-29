@@ -58,6 +58,17 @@ class ExecutionReportTest < Minitest::Test
     assert_equal 0, @report.document.fetch("terminal")
   end
 
+  def test_remote_owner_crash_during_cleanup_is_reported_without_claiming_absence
+    write_json("execution-profile.json", "pools" => [{ "backend" => "rpof" }])
+    @state["status"] = "cleanup_pending"
+    @state["resource_disposition"] = { "phase" => "awaiting_terminal_cleanup" }
+    write_json("execution.json", @state)
+
+    report = @report.document
+    assert_equal "owner_crashed", report.fetch("status")
+    assert_equal "awaiting_terminal_cleanup", report.dig("resource_disposition", "phase")
+  end
+
   def test_human_report_shows_stale_jobs_controls_finished_timing_and_manager_paths
     @state.merge!("last_run_finished_at" => "2026-09-28T12:00:07Z",
                   "circuit_breaker" => { "tripped" => true, "reason" => "failure limit reached" })

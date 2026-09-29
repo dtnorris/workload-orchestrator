@@ -36,9 +36,12 @@ module WorkloadOrchestrator
       workers.validate_plan!(plan)
       store.with_execution_lock do
         store.prepare!
+        install_interrupt_handlers
         store.reconcile_remote_running! if rpof?
         yield if block_given?
         run_locked(resume, acknowledge_circuit_breaker)
+      ensure
+        restore_interrupt_handlers
       end
     end
 
@@ -72,13 +75,25 @@ module WorkloadOrchestrator
         @budget_lifecycle = lifecycle
         store.start!
         schedule_jobs
+        store.record_interruption!(@interrupt_signal) if @interrupt_signal
         value = finalize_and_report
-        PoolFulfillment::Outcome.new(value: value, retain_capacity: value != "completed")
+        PoolFulfillment::Outcome.new(value: value, retain_capacity: value == "paused")
       end
+      store.record_resource_disposition!(capacity_disposition) if File.file?(capacity_session_path)
       status
     rescue Error => e
-      store.record_dispatch_halt!(kind: "capacity", error: e.message) unless store.dispatch_halted?
-      finalize_and_report
+      if @interrupt_signal
+        store.record_interruption!(@interrupt_signal)
+      else
+        store.record_dispatch_halt!(kind: "capacity", error: e.message) unless store.dispatch_halted?
+      end
+      store.record_resource_disposition!(capacity_disposition) if File.file?(capacity_session_path)
+      if store.workload_status
+        @out.puts "Execution: #{store.status}"
+        store.status
+      else
+        finalize_and_report
+      end
     ensure
       @remote_handoffs = @budget_lifecycle = nil
     end
@@ -355,7 +370,30 @@ module WorkloadOrchestrator
     end
 
     def stop_dispatch?
-      store.paused? || store.circuit_tripped? || @remote_halt_mutex.synchronize { @remote_halted }
+      @interrupt_signal || store.paused? || store.circuit_tripped? || @remote_halt_mutex.synchronize { @remote_halted }
+    end
+
+    def capacity_session_path
+      File.join(store.output_dir, "capacity", "session.json")
+    end
+
+    def capacity_disposition
+      root = File.dirname(capacity_session_path)
+      sessions = Dir.glob(File.join(root, "sessions", "session-*.json"))
+      latest = (sessions + [capacity_session_path]).select { |path| File.file?(path) }
+                     .max_by { |path| path[%r{session-(\d+)\.json\z}, 1]&.to_i || 1 }
+      JSON.parse(File.read(latest)).fetch("disposition")
+    end
+
+    def install_interrupt_handlers
+      return unless rpof? && Thread.current == Thread.main
+      @previous_handlers = %w[INT TERM].to_h do |signal|
+        [signal, Signal.trap(signal) { @interrupt_signal ||= signal }]
+      end
+    end
+
+    def restore_interrupt_handlers
+      @previous_handlers&.each { |signal, previous| Signal.trap(signal, previous) }
     end
 
     def rpof?
@@ -387,7 +425,7 @@ module WorkloadOrchestrator
     end
 
     def finalize_and_report
-      status = store.finish!
+      status = store.finish!(resource_cleanup_pending: rpof?)
       counts = store.counts
       @out.puts "Execution: #{status}"
       @out.puts "Jobs: #{format_counts(counts)}"

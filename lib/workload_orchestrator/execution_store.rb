@@ -58,13 +58,20 @@ module WorkloadOrchestrator
       end
     end
 
-    def finish!
+    def finish!(resource_cleanup_pending: false)
       update_execution do |state|
-        state["status"] = final_status_unlocked(state)
+        result = final_status_unlocked(state)
+        if resource_cleanup_pending && result != "paused"
+          state["workload_status"] = result
+          state["resource_disposition"] = { "phase" => "awaiting_terminal_cleanup" }
+          state["status"] = "cleanup_pending"
+        else
+          state["status"] = result
+        end
         state["last_run_finished_at"] = timestamp
       end
       rebuild_jobs!
-      status
+      resource_cleanup_pending ? read_execution.fetch("workload_status", status) : status
     end
 
     def status
@@ -96,6 +103,27 @@ module WorkloadOrchestrator
 
     def dispatch_halt
       read_execution["dispatch_halt"]
+    end
+
+    def record_interruption!(signal)
+      update_execution do |state|
+        state["interruption"] ||= { "signal" => signal.to_s, "at" => timestamp }
+        state["status"] = "interrupted"
+      end
+    end
+
+    def record_resource_disposition!(disposition)
+      update_execution do |state|
+        state["resource_disposition"] = disposition
+        if state["workload_status"]
+          state["status"] = disposition["phase"] == "verified_provider_absence" ?
+                              state.fetch("workload_status") : "cleanup_failed"
+        end
+      end
+    end
+
+    def workload_status
+      read_execution["workload_status"]
     end
 
     def acknowledge_circuit_breaker!
@@ -335,6 +363,7 @@ module WorkloadOrchestrator
     end
 
     def final_status_unlocked(state)
+      return "interrupted" if state["interruption"]
       return "paused" if paused?
       return "infrastructure_failed" if state.key?("dispatch_halt")
       return "circuit_broken" if state.dig("circuit_breaker", "tripped")

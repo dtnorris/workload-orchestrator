@@ -17,6 +17,7 @@ class RemoteRunnerTest < Minitest::Test
   end
 
   class FakeCapacitySession
+    attr_accessor :output_dir, :cleanup_phase
     attr_reader :calls, :outcomes, :lifecycle
     attr_accessor :admission_error
 
@@ -31,6 +32,19 @@ class RemoteRunnerTest < Minitest::Test
       @calls << { authorize_paid: authorize_paid, resume: resume }
       outcome = yield({ "remote-pool" => @handoff }, @lifecycle)
       @outcomes << outcome
+      if output_dir
+        root = File.join(output_dir, "capacity")
+        FileUtils.mkdir_p(root)
+        path = File.join(root, "session.json")
+        if File.file?(path)
+          FileUtils.mkdir_p(File.join(root, "sessions"))
+          path = File.join(root, "sessions", "session-#{@outcomes.length}.json")
+        end
+        File.write(path, JSON.generate("disposition" => {
+          "phase" => @cleanup_phase || (outcome.retain_capacity ? "retained_for_pause" : "verified_provider_absence")
+        }))
+      end
+      raise WorkloadOrchestrator::Error, "cleanup was not verified" if @cleanup_phase
       outcome.value
     end
 
@@ -48,7 +62,7 @@ class RemoteRunnerTest < Minitest::Test
   end
 
   class FakeClient
-    attr_accessor :modes, :started, :release
+    attr_accessor :modes, :started, :release, :delay
     attr_reader :requests
 
     def initialize(modes = {})
@@ -61,6 +75,7 @@ class RemoteRunnerTest < Minitest::Test
       @requests << request
       @started << job.fetch("job_id") if @started
       @release.pop if @release
+      sleep(@delay) if @delay
       mode = @modes.fetch(job.fetch("job_id"), :complete)
       raise WorkloadOrchestrator::Error, "simulated transport loss" if mode == :transport
 
@@ -121,7 +136,7 @@ class RemoteRunnerTest < Minitest::Test
     assert_equal "failed", failed.fetch("status")
     assert_equal 7, failed.fetch("exit_status")
     assert_includes File.read(File.join(@output, "runs", "second", "stdout.log")), "remote stdout"
-    assert session.outcomes.first.retain_capacity
+    refute session.outcomes.first.retain_capacity
 
     store.retry_failed!(all: false, job_ids: ["second"], reason: "fixed", acknowledge_circuit_breaker: false)
     client.modes = {}
@@ -154,7 +169,20 @@ class RemoteRunnerTest < Minitest::Test
     assert_equal ["first"], client.requests.map { |request| request.dig("jobs", 0, "job_id") }
     assert_equal "remote_in_doubt", metadata("first").dig("evidence", "kind")
     assert_includes metadata("first").fetch("error"), "simulated transport loss"
-    assert session.outcomes.first.retain_capacity
+    refute session.outcomes.first.retain_capacity
+  end
+
+  def test_completed_jobs_do_not_report_success_when_terminal_cleanup_is_unverified
+    client = FakeClient.new
+    session = FakeCapacitySession.new(@handoff)
+    session.cleanup_phase = "in_progress"
+
+    assert_equal "cleanup_failed", runner(client, session).run
+    assert_equal({ "complete" => 3 }, compact_counts)
+    execution = JSON.parse(File.read(File.join(@output, "execution.json")))
+    assert_equal "completed", execution.fetch("workload_status")
+    assert_equal "in_progress", execution.dig("resource_disposition", "phase")
+    assert_equal "cleanup_failed", execution.fetch("status")
   end
 
   def test_pause_drains_active_remote_job_and_resume_uses_same_capacity_scope
@@ -175,6 +203,26 @@ class RemoteRunnerTest < Minitest::Test
     assert_equal({ "complete" => 3 }, compact_counts)
   end
 
+  def test_interruption_stops_new_dispatch_drains_active_and_requests_terminal_cleanup
+    client = FakeClient.new
+    client.started = Queue.new
+    client.release = Queue.new
+    session = FakeCapacitySession.new(@handoff)
+    subject = runner(client, session)
+    thread = Thread.new { subject.run }
+    assert_equal "first", client.started.pop
+    subject.instance_variable_set(:@interrupt_signal, "TERM")
+    client.release << true
+
+    assert_equal "interrupted", thread.value
+    assert_equal ["first"], client.requests.map { |request| request.dig("jobs", 0, "job_id") }
+    refute session.outcomes.first.retain_capacity
+    assert_equal "interrupted", store.status
+    assert_equal "TERM", JSON.parse(File.read(File.join(@output, "execution.json"))).dig("interruption", "signal")
+    assert_equal "verified_provider_absence", JSON.parse(File.read(File.join(@output, "execution.json")))
+                                               .dig("resource_disposition", "phase")
+  end
+
   def test_stale_remote_running_attempt_becomes_in_doubt_and_is_not_replayed
     subject = runner(FakeClient.new, FakeCapacitySession.new(@handoff))
     subject.store.prepare!
@@ -192,6 +240,7 @@ class RemoteRunnerTest < Minitest::Test
   def test_admitted_worker_receives_unclaimed_jobs_and_decisions_are_durable
     @plan = remote_plan(%w[first second third fourth], desired: 2)
     client = FakeClient.new
+    client.delay = 0.002
     client.started = Queue.new
     client.release = Queue.new
     session = FakeCapacitySession.new(@handoff)
@@ -211,6 +260,7 @@ class RemoteRunnerTest < Minitest::Test
   def test_failed_admission_halts_dispatch_without_changing_job_outcomes
     @plan = remote_plan(%w[first second third fourth], desired: 2)
     client = FakeClient.new
+    client.delay = 0.002
     client.started = Queue.new
     client.release = Queue.new
     session = FakeCapacitySession.new(@handoff)
@@ -257,6 +307,7 @@ class RemoteRunnerTest < Minitest::Test
   end
 
   def runner(client, session, admission_policy: WorkloadOrchestrator::WorkerAdmissionPolicy.new)
+    session.output_dir = @output
     WorkloadOrchestrator::Runner.new(
       plan: @plan, workers: @workers, workdir: @workdir, output_dir: @output,
       out: StringIO.new, rpof_client: client, capacity_session: session, admission_policy: admission_policy

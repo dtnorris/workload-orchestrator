@@ -2,6 +2,7 @@
 
 require_relative "rpof_capacity_client"
 require_relative "paid_budget_lifecycle"
+require "time"
 
 module WorkloadOrchestrator
   # Capacity is consumed inside the block while the original guardian budget
@@ -11,10 +12,12 @@ module WorkloadOrchestrator
     VERSION = "wlo-execution-pool-handoff/v0.1"
     Outcome = Struct.new(:value, :retain_capacity, keyword_init: true)
 
-    def initialize(pool_plan:, client:, output_dir:)
+    def initialize(pool_plan:, client:, output_dir:, cleanup_wait_seconds: nil, sleeper: ->(seconds) { sleep(seconds) })
       @plan = pool_plan
       @client = client
       @output = File.expand_path(output_dir)
+      @cleanup_wait_seconds = cleanup_wait_seconds
+      @sleeper = sleeper
     end
 
     def with_capacity(authorize_paid: false, resume: false)
@@ -25,6 +28,7 @@ module WorkloadOrchestrator
                                           binding_path: File.join(@output, "budget-binding.json"))
       completed = false
       retained = false
+      outcome = nil
       begin
         bounds = lifecycle.start!
         handoffs = resume ? resume_handoffs(lifecycle, bounds) : fulfill_handoffs(lifecycle, bounds)
@@ -32,21 +36,28 @@ module WorkloadOrchestrator
         outcome = Outcome.new(value: outcome, retain_capacity: false) unless outcome.is_a?(Outcome)
         lifecycle.check_for!(budget: @plan.budget, client: @client)
         completed = true
-        retained = outcome.retain_capacity == true
+        retained = outcome.retain_capacity == true && outcome.value.to_s == "paused"
         lifecycle.suspend! if retained
         outcome.value
       ensure
         teardown = if lifecycle&.suspended?
                      false
                    else
-                     lifecycle&.finish!(reason: completed ? "wlo_capacity_scope_complete" : "wlo_capacity_scope_failed")
+                     lifecycle&.finish!(reason: completed ? "wlo_#{outcome&.value || 'complete'}" : "wlo_capacity_scope_failed")
                    end
         error = $!
+        disposition = if retained
+                        { "phase" => "retained_for_pause", "provider_state" => "ARMED" }
+                      elsif teardown
+                        observe_teardown(lifecycle)
+                      else
+                        { "phase" => "request_failed", "error" => lifecycle&.last_error&.message }
+                      end
         write_session("completed" => completed, "capacity_retained" => retained,
-                      "teardown_requested" => teardown == true, "error" => error&.message,
-                      "cleanup_error" => lifecycle&.last_error&.message)
-        if !teardown && !retained && !error
-          raise Error, "budget teardown was not acknowledged; guardian fallback remains active"
+                      "teardown_requested" => teardown == true, "disposition" => disposition,
+                      "error" => error&.message, "cleanup_error" => lifecycle&.last_error&.message)
+        if !retained && disposition["phase"] != "verified_provider_absence" && !error
+          raise Error, "terminal provider cleanup #{disposition['phase']}; original guardian/budget remains authoritative"
         end
       end
     end
@@ -102,10 +113,48 @@ module WorkloadOrchestrator
 
     private
 
+    def observe_teardown(lifecycle)
+      first = lifecycle.teardown_snapshot
+      deadline = Time.iso8601(first.fetch("deadline_at_utc"))
+      reserve = @plan.budget.document.fetch("teardown_reserve_seconds")
+      limit = [deadline, Time.now.utc + (@cleanup_wait_seconds || reserve)].min
+      loop do
+        remaining = limit - Time.now.utc
+        snapshot = lifecycle.teardown_status(timeout_seconds: [[remaining, 0.001].max, 30].min)
+        phase = snapshot.fetch("teardown_phase")
+        unless %w[requested in_progress verified_provider_absence].include?(phase)
+          raise Error, "invalid terminal provider teardown phase #{phase.inspect}"
+        end
+        if phase == "verified_provider_absence"
+          active = snapshot.fetch("owned_resources").values.any? { |row| row["status"] == "active" }
+          pending = snapshot.fetch("reservations").values.any? { |row| row["status"] == "pending" }
+          unless snapshot["state"] == "CLOSED" && snapshot["provider_absence_verified_at_utc"] && !active && !pending
+            raise Error, "provider absence claim lacks closed, liability-free evidence"
+          end
+        elsif snapshot["state"] != "TEARDOWN_REQUIRED"
+          raise Error, "provider teardown phase is inconsistent with budget state"
+        end
+        evidence = snapshot.slice("state", "teardown_phase", "teardown_reason", "teardown_required_at_utc",
+                                  "teardown_started_at_utc", "provider_absence_verified_at_utc", "closed_at_utc",
+                                  "deadline_at_utc", "owned_resources", "reservations")
+        return { "phase" => phase, "provider" => evidence } if phase == "verified_provider_absence" || Time.now.utc >= limit
+        @sleeper.call([@plan.budget.document.fetch("guardian_poll_seconds"), [limit - Time.now.utc, 0].max].min)
+      end
+    rescue StandardError => e
+      { "phase" => "observation_failed", "error" => e.message,
+        "request" => first && first.slice("state", "teardown_reason", "teardown_required_at_utc") }
+    end
+
     def prepare_output!(resume)
       if resume
         unless File.directory?(@output) && File.file?(File.join(@output, "capacity.json"))
           raise Error, "resume requires the original capacity evidence; re-fulfillment is forbidden"
+        end
+        sessions = [File.join(@output, "session.json"), *Dir.glob(File.join(@output, "sessions", "session-*.json"))]
+        latest = sessions.select { |path| File.file?(path) }
+                         .max_by { |path| path[%r{session-(\d+)\.json\z}, 1]&.to_i || 1 }
+        if latest && JSON.parse(File.read(latest)).fetch("disposition", {})["phase"] != "retained_for_pause"
+          raise Error, "terminal capacity disposition forbids paid resume or a fresh budget in this execution"
         end
         return
       end

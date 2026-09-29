@@ -104,7 +104,8 @@ class PoolProviderFixture < WorkloadOrchestrator::RpofCapacityClient
   end
   attr_reader :calls, :snapshot, :wire_requests
   attr_accessor :preflight_status, :initial_workers, :paid_status, :final_workers, :override,
-                :ownership, :pending, :fail_after_create, :callback, :teardown_fails, :ready
+                :ownership, :pending, :fail_after_create, :callback, :teardown_fails, :ready,
+                :teardown_completes
 
   def initialize
     super(executable: RbConfig.ruby)
@@ -115,6 +116,7 @@ class PoolProviderFixture < WorkloadOrchestrator::RpofCapacityClient
     @paid_status = "ready"
     @ownership = true
     @ready = true
+    @teardown_completes = true
   end
 
   private
@@ -152,6 +154,14 @@ class PoolProviderFixture < WorkloadOrchestrator::RpofCapacityClient
       return ["", "teardown unavailable", Status.new(1)] if @teardown_fails
       @snapshot["state"] = "TEARDOWN_REQUIRED"
       @snapshot["mutation_allowed"] = false
+      @snapshot["teardown_phase"] = "requested"
+      if @teardown_completes
+        @snapshot["state"] = "CLOSED"
+        @snapshot["teardown_phase"] = "verified_provider_absence"
+        @snapshot["provider_absence_verified_at_utc"] = now.iso8601
+        @snapshot["owned_resources"].each_value { |row| row["status"] = "absent" }
+        @snapshot["reservations"].each_value { |row| row["status"] = "released" }
+      end
     elsif operation == "heartbeat"
       @snapshot["last_orchestrator_heartbeat_at_utc"] = now.iso8601
     end
@@ -246,12 +256,13 @@ class PoolFulfillmentTest < Minitest::Test
       :consumed
     end
     assert_equal :consumed, result
-    assert_equal "TEARDOWN_REQUIRED", @provider.snapshot["state"]
+    assert_equal "CLOSED", @provider.snapshot["state"]
     operations = @provider.calls.map { |args| args.first == "budget" ? args[1] : args.last }
     assert_equal ["--dry-run", "--dry-run", "arm"], operations.first(3)
     assert_equal 1, operations.count("arm")
     assert_equal 2, operations.count("--yes")
-    assert_equal "begin-teardown", operations.last
+    assert_equal "begin-teardown", operations[-2]
+    assert_equal "evaluate", operations.last
     assert File.file?(File.join(@output, "capacity.json"))
     assert JSON.parse(File.read(File.join(@output, "session.json")))["teardown_requested"]
     @provider.wire_requests.each do |request|
@@ -299,7 +310,7 @@ class PoolFulfillmentTest < Minitest::Test
       @provider = PoolProviderFixture.new
       @provider.override = override
       assert_raises(WorkloadOrchestrator::Error) { run_capacity { flunk } }
-      assert_equal "begin-teardown", @provider.calls.last[1]
+      assert_includes @provider.calls.map { |args| args[1] }, "begin-teardown"
       assert_equal 1, @provider.calls.count { |args| args.include?("--yes") }
     end
   end
@@ -307,25 +318,25 @@ class PoolFulfillmentTest < Minitest::Test
   def test_no_unowned_or_uncommitted_resources_can_be_handed_off
     @provider.ownership = false
     assert_raises(WorkloadOrchestrator::Error) { run_capacity { flunk } }
-    assert_equal "TEARDOWN_REQUIRED", @provider.snapshot["state"]
+    assert_equal "CLOSED", @provider.snapshot["state"]
     @provider = PoolProviderFixture.new
     @provider.pending = true
     @output = File.join(@root, "pending")
     assert_raises(WorkloadOrchestrator::Error) { run_capacity { flunk } }
-    assert_equal "TEARDOWN_REQUIRED", @provider.snapshot["state"]
+    assert_equal "CLOSED", @provider.snapshot["state"]
   end
 
   def test_fresh_capability_failure_requests_teardown
     @provider.ready = false
     assert_raises(WorkloadOrchestrator::Error) { run_capacity { flunk } }
-    assert_equal "TEARDOWN_REQUIRED", @provider.snapshot["state"]
+    assert_equal "CLOSED", @provider.snapshot["state"]
   end
 
   def test_unknown_create_outcome_keeps_evidence_and_requests_teardown
     @provider.fail_after_create = true
     assert_raises(WorkloadOrchestrator::Error) { run_capacity { flunk } }
     assert_equal 1, @provider.snapshot["owned_resources"].length
-    assert_equal "TEARDOWN_REQUIRED", @provider.snapshot["state"]
+    assert_equal "CLOSED", @provider.snapshot["state"]
     assert File.file?(File.join(@output, "intent.json"))
     assert File.file?(File.join(@output, "session.json"))
   end
@@ -333,7 +344,7 @@ class PoolFulfillmentTest < Minitest::Test
   def test_callback_exception_is_preserved_and_cleanup_failure_is_reported
     error = assert_raises(ArgumentError) { run_capacity { raise ArgumentError, "consumer failed" } }
     assert_equal "consumer failed", error.message
-    assert_equal "TEARDOWN_REQUIRED", @provider.snapshot["state"]
+    assert_equal "CLOSED", @provider.snapshot["state"]
     @provider = PoolProviderFixture.new
     @provider.teardown_fails = true
     @output = File.join(@root, "cleanup-failure")
@@ -367,7 +378,7 @@ class PoolFulfillmentTest < Minitest::Test
     assert_equal :completed, resumed
     assert_equal paid_calls, @provider.calls.count { |args| args.include?("--yes") }
     assert_equal arm_calls, @provider.calls.count { |args| args == ["budget", "arm"] }
-    assert_equal "TEARDOWN_REQUIRED", @provider.snapshot["state"]
+    assert_equal "CLOSED", @provider.snapshot["state"]
     assert File.file?(File.join(@output, "sessions", "session-2.json"))
   end
 
@@ -427,13 +438,33 @@ class PoolFulfillmentTest < Minitest::Test
     assert_empty @provider.calls
   end
 
+  def test_terminal_teardown_in_progress_is_visible_and_blocks_paid_resume
+    @provider.teardown_completes = false
+    pending = WorkloadOrchestrator::PoolFulfillment.new(
+      pool_plan: @plan, client: @provider, output_dir: @output, cleanup_wait_seconds: 0
+    )
+    error = assert_raises(WorkloadOrchestrator::Error) do
+      pending.with_capacity(authorize_paid: true) { :completed }
+    end
+    assert_includes error.message, "terminal provider cleanup requested"
+    session_state = JSON.parse(File.read(File.join(@output, "session.json")))
+    assert_equal "requested", session_state.dig("disposition", "phase")
+    assert_equal true, session_state["teardown_requested"]
+    assert_equal "TEARDOWN_REQUIRED", @provider.snapshot["state"]
+    calls = @provider.calls.length
+    assert_raises(WorkloadOrchestrator::Error) do
+      pending.with_capacity(authorize_paid: true, resume: true) { flunk "terminal capacity reused" }
+    end
+    assert_equal calls, @provider.calls.length
+  end
+
   def test_later_pool_failure_tears_down_the_same_parent_budget
     @provider.callback = lambda do |snapshot|
       @provider.fail_after_create = true if snapshot["owned_resources"].length > 1
     end
     assert_raises(WorkloadOrchestrator::Error) { run_capacity { flunk } }
     assert_equal 2, @provider.snapshot["owned_resources"].length
-    assert_equal "TEARDOWN_REQUIRED", @provider.snapshot["state"]
+    assert_equal "CLOSED", @provider.snapshot["state"]
     paid = @provider.calls.select { |args| args.include?("--yes") }
     assert_equal 2, paid.length
   end
@@ -495,11 +526,11 @@ class PoolFulfillmentTest < Minitest::Test
       snapshot["deadline_at_utc"] = (Time.iso8601(snapshot["deadline_at_utc"]) + 1).iso8601
     end
     assert_raises(WorkloadOrchestrator::Error) { run_capacity { flunk } }
-    assert_equal "TEARDOWN_REQUIRED", @provider.snapshot["state"]
+    assert_equal "CLOSED", @provider.snapshot["state"]
     @provider = PoolProviderFixture.new
     @output = File.join(@root, "over-rate")
     @provider.callback = ->(snapshot) { snapshot["committed_rate_usd_per_hour"] = 2.1 }
     assert_raises(WorkloadOrchestrator::Error) { run_capacity { flunk } }
-    assert_equal "TEARDOWN_REQUIRED", @provider.snapshot["state"]
+    assert_equal "CLOSED", @provider.snapshot["state"]
   end
 end

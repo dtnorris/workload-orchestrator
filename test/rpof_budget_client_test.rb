@@ -18,7 +18,7 @@ class RpofBudgetClientTest < Minitest::Test
 
     private
 
-    def capture_budget(arguments)
+    def capture_budget(arguments, timeout_seconds: nil)
       @calls << arguments
       @request = JSON.parse(File.read(arguments[2])) if arguments[0] == "arm"
       status = Struct.new(:success?).new(@code.zero?)

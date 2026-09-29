@@ -73,10 +73,10 @@ module WorkloadOrchestrator
     def finish!(reason:)
       stop_heartbeat
       return false if @suspended
-      return true unless @started && @lock
+      return false unless @started && @lock
 
       @operations.synchronize do
-        @client.begin_budget_teardown(budget: @budget, reason: reason)
+        @teardown_snapshot = @client.begin_budget_teardown(budget: @budget, reason: reason)
       end
       true
     rescue StandardError => e
@@ -104,6 +104,12 @@ module WorkloadOrchestrator
 
     def last_error
       @failure
+    end
+
+    attr_reader :teardown_snapshot
+
+    def teardown_status(timeout_seconds:)
+      @budget.validate_snapshot!(@client.budget_status(budget: @budget, timeout_seconds: timeout_seconds))
     end
 
     private

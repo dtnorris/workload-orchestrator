@@ -21,7 +21,12 @@ module WorkloadOrchestrator
         "counts" => counts, "total" => jobs.length, "terminal" => terminal,
         "progress_percent" => jobs.empty? ? 100.0 : (100.0 * terminal / jobs.length).round(1),
         "executor_active" => executor_active?, "manager" => manager_record
-      )
+      ).tap do |report|
+        if %w[running cleanup_pending].include?(report["status"]) && !report["executor_active"] && rpof_execution?
+          report["status"] = "owner_crashed"
+          report["resource_disposition"] ||= { "phase" => "guardian_pending", "detail" => "owner vanished; inspect the original RPOF budget" }
+        end
+      end
     rescue SystemCallError, JSON::ParserError, KeyError => e
       raise Error, "cannot read execution status: #{e.message}"
     end
@@ -32,6 +37,7 @@ module WorkloadOrchestrator
       out.puts "Execution: #{state.fetch('status')} | executor #{state['executor_active'] ? 'active' : 'inactive'}"
       out.puts "Progress: [#{state['terminal']}/#{state['total']}] terminal (#{state['progress_percent']}%)"
       out.puts "Jobs: #{state.fetch('counts').map { |key, value| "#{key}=#{value}" }.join(' ')}"
+      out.puts "Resources: #{state.dig('resource_disposition', 'phase')}" if state["resource_disposition"]
       print_controls(out, state)
       print_timing(out, state)
       print_jobs(out, state.fetch("jobs"), state["executor_active"])
@@ -40,6 +46,13 @@ module WorkloadOrchestrator
     end
 
     private
+
+    def rpof_execution?
+      path = File.join(@root, "execution-profile.json")
+      return false unless File.file?(path)
+
+      JSON.parse(File.read(path)).fetch("pools").any? { |pool| pool["backend"] == "rpof" }
+    end
 
     def job_counts(jobs)
       observed = jobs.map { |job| job.fetch("status") }.tally
