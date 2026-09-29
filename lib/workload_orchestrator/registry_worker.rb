@@ -34,35 +34,14 @@ module WorkloadOrchestrator
       state == "READY"
     end
 
-    # Capability comparison is deterministic and mirrors the frozen contract's
-    # exact-match semantics. Selection and assignment belong to later work.
+    # Preserve the DW-09 predicate API while keeping matching semantics in the
+    # single authoritative matcher used by future dynamic scheduling.
     def compatible?(required_labels: [], ollama_requirement: nil)
-      return false unless ready?
-      return false unless (Array(required_labels).map(&:to_s) - labels).empty?
-      return true unless ollama_requirement
-
-      requirement = ollama_requirement.transform_keys(&:to_s)
-      gpu_compatible?(requirement) && model_compatible?(requirement)
-    end
-
-    private
-
-    def gpu_compatible?(requirement)
-      !requirement["required_gpu_id"] || gpu_id == requirement["required_gpu_id"]
-    end
-
-    def model_compatible?(requirement)
-      model = ollama_models.find do |candidate|
-        candidate.fetch("model") == requirement.fetch("model") &&
-          candidate.fetch("digest") == requirement.fetch("expected_digest")
-      end
-      return false unless model
-      return false if requirement.key?("required_context_length") &&
-                      model.fetch("context_length") != requirement.fetch("required_context_length")
-      return false if requirement["require_fully_gpu_resident"] &&
-                      model.fetch("fully_gpu_resident") != true
-
-      true
+      CapabilityMatcher.match(
+        worker: self,
+        required_labels: required_labels,
+        ollama_requirement: ollama_requirement
+      ).compatible?
     end
   end
 end
