@@ -104,8 +104,9 @@ module WorkloadOrchestrator
       %w[running failed].each do |status|
         selected = jobs.select { |row| row["status"] == status }
         selected.first(10).each do |row|
+          reason = row["failure_reason"] ? " reason=#{row['failure_reason']}" : ""
           out.puts "#{status.capitalize}: #{row['job_id']} worker=#{row['worker']} attempt=#{row['attempt']} " \
-                   "exit=#{row['exit_status'].inspect}"
+                   "exit=#{row['exit_status'].inspect}#{reason}"
         end
         out.puts "#{status.capitalize}: #{selected.length - 10} more; use status --json" if selected.length > 10
       end

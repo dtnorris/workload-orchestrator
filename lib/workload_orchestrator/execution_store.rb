@@ -3,6 +3,7 @@
 require "fileutils"
 require "json"
 require "time"
+require_relative "dynamic_attempt_state"
 require_relative "execution_retry"
 require_relative "terminal_import_state"
 
@@ -10,6 +11,10 @@ module WorkloadOrchestrator
   class ExecutionStore
     include ExecutionRetry
     include TerminalImportState
+    include AttemptPersistence
+    include DynamicAttemptState
+    include DynamicAttemptTerminalState
+    include DynamicWorkerLossState
 
     CONTRACT_VERSION = "wlo-execution-state/v0.1"
     TERMINAL_JOB_STATUSES = %w[complete failed].freeze
@@ -162,29 +167,17 @@ module WorkloadOrchestrator
     end
 
     def record_running!(job:, worker:, environment_keys:)
-      prior = metadata_for(job)
-      attempt = prior ? Integer(prior.fetch("attempt", 0)) + 1 : 1
-      run_dir = run_dir(job)
-      FileUtils.mkdir_p(run_dir)
-      write_json(
-        metadata_path(job),
-        {
-          "job_id" => job.id,
-          "pool_id" => job.pool_id,
-          "worker" => worker.name,
-          "status" => "running",
-          "attempt" => attempt,
-          "started_at" => timestamp,
-          "argv" => job.argv,
-          "environment_keys" => environment_keys.sort
-        }
+      started_at, = persist_running!(
+        job: job,
+        worker_name: worker.name,
+        environment_keys: environment_keys,
+        worker_binding: nil
       )
-      rebuild_jobs!
-      Time.now
+      started_at
     end
 
     def record_terminal!(job:, status:, started_at:, exit_status:, error: nil, evidence: nil, failure_class: nil)
-      raise Error, "invalid terminal status #{status.inspect}" unless TERMINAL_JOB_STATUSES.include?(status)
+      validate_terminal_status!(status)
       unless failure_class.nil? || status == "failed" && TerminalImport::CLASSES.include?(failure_class)
         raise Error, "invalid failure class #{failure_class.inspect}"
       end
@@ -416,7 +409,8 @@ module WorkloadOrchestrator
           "attempt" => metadata && metadata["attempt"],
           "worker" => metadata && metadata["worker"],
           "exit_status" => metadata && metadata["exit_status"],
-          "failure_class" => metadata && metadata["failure_class"]
+          "failure_class" => metadata && metadata["failure_class"],
+          "failure_reason" => metadata&.dig("evidence", "reason")
         }
       end
       write_json(File.join(output_dir, "jobs.json"), { "jobs" => rows })

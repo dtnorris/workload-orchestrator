@@ -9,7 +9,8 @@ require_relative "worker_registry_poller"
 
 module WorkloadOrchestrator
   class Runner
-    attr_reader :plan, :workers, :workdir, :store, :worker_registry_poller
+    attr_reader :plan, :workers, :workdir, :store, :worker_registry_poller,
+                :worker_loss_reconciler
 
     RemoteWorker = Struct.new(:name, :index, keyword_init: true)
 
@@ -49,8 +50,9 @@ module WorkloadOrchestrator
       workers.validate_plan!(plan) unless dynamic_workers?
       store.with_execution_lock do
         store.prepare!
+        store.restore_dynamic_worker_loss_halt! if dynamic_workers?
         install_interrupt_handlers
-        store.reconcile_remote_running! if rpof?
+        store.reconcile_remote_running! if rpof? && !dynamic_workers?
         yield if block_given?
         run_locked(resume, acknowledge_circuit_breaker)
       ensure
@@ -99,7 +101,11 @@ module WorkloadOrchestrator
         interval_seconds: @worker_poll_interval,
         sleeper: @worker_registry_sleeper
       )
-      worker_registry_poller.run(stop: method(:stop_dynamic_polling?))
+      @worker_loss_reconciler ||= DynamicWorkerLossReconciler.new(store: store)
+      worker_loss_reconciler.reconcile!(worker_registry_poller)
+      worker_registry_poller.run(stop: method(:stop_dynamic_polling?)) do |poller|
+        worker_loss_reconciler.reconcile!(poller)
+      end
       store.record_interruption!(@interrupt_signal) if @interrupt_signal
       finalize_and_report(resource_cleanup_pending: false)
     rescue Error => e
@@ -447,7 +453,8 @@ module WorkloadOrchestrator
     end
 
     def stop_dispatch?
-      @interrupt_signal || store.paused? || store.circuit_tripped? || @remote_halt_mutex.synchronize { @remote_halted }
+      @interrupt_signal || store.paused? || store.circuit_tripped? || store.dispatch_halted? ||
+        @remote_halt_mutex.synchronize { @remote_halted }
     end
 
     def stop_dynamic_polling?

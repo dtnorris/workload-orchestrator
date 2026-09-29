@@ -71,6 +71,12 @@ module WorkloadOrchestrator
       self
     end
 
+    # The checkpoint is written before it becomes visible here, so consumers
+    # may safely use it as the sole source of worker-loss decisions.
+    def accepted_checkpoint
+      @checkpoint
+    end
+
     private
 
     def current_time
