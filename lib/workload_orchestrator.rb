@@ -18,3 +18,5 @@ require_relative "workload_orchestrator/cli"
 
 module WorkloadOrchestrator
 end
+require_relative "workload_orchestrator/detached_manager"
+require_relative "workload_orchestrator/execution_report"

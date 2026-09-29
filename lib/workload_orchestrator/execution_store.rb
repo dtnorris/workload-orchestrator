@@ -52,12 +52,17 @@ module WorkloadOrchestrator
     def start!
       update_execution do |state|
         state["started_at"] ||= timestamp
+        state["last_run_started_at"] = timestamp
+        state.delete("last_run_finished_at")
         state["status"] = "running"
       end
     end
 
     def finish!
-      update_execution { |state| state["status"] = final_status_unlocked(state) }
+      update_execution do |state|
+        state["status"] = final_status_unlocked(state)
+        state["last_run_finished_at"] = timestamp
+      end
       rebuild_jobs!
       status
     end

@@ -33,10 +33,12 @@ module WorkloadOrchestrator
       when "validate" then validate_command
       when "plan" then plan_command
       when "worker-check" then worker_check_command
+      when "start" then run_command(resume: false, detached: true)
       when "run" then run_command(resume: false)
       when "resume" then run_command(resume: true)
       when "retry-failed" then retry_failed_command
       when "status" then status_command
+      when "summary" then status_command(human: true)
       when "pause" then pause_command
       else raise Error, "unknown command #{command.inspect}; run bin/wlo --help"
       end
@@ -84,9 +86,12 @@ module WorkloadOrchestrator
       0
     end
 
-    def run_command(resume:)
+    def run_command(resume:, detached: false)
       plan_path = required_argument!("PLAN.json")
-      options = parse_runtime_options(require_output: true, allow_acknowledge: resume)
+      options = parse_runtime_options(require_output: true, allow_acknowledge: resume || detached, detached: detached)
+      resume ||= options.fetch(:resume, false)
+      raise Error, "breaker acknowledgement requires --resume" if options[:acknowledge] && !resume
+
       reject_extra_arguments!
       plan = load_bound_plan(plan_path, options)
       plan.execution_profile&.ensure_runnable!
@@ -96,22 +101,37 @@ module WorkloadOrchestrator
         workers: workers,
         workdir: require_workdir(options),
         output_dir: options.fetch(:output),
-        out: @out
+        out: detached ? $stdout : @out
       )
+      return start_manager(runner, resume, options) if detached
+
       status = runner.run(resume: resume, acknowledge_circuit_breaker: options.fetch(:acknowledge, false))
       %w[completed paused].include?(status) ? 0 : 2
     end
 
-    def status_command
+    def start_manager(runner, resume, options)
+      record = DetachedManager.new(runner).start(
+        resume: resume, acknowledge_circuit_breaker: options.fetch(:acknowledge, false)
+      )
+      @out.puts "Detached manager started: PID #{record.fetch('pid')}"
+      @out.puts "Manager log: #{record.fetch('log_path')}"
+      @out.puts "Use summary to check readiness, progress and the final result."
+      0
+    end
+
+    def status_command(human: false)
       plan_path = required_argument!("PLAN.json")
       output = nil
-      OptionParser.new { |opts| opts.on("--output DIR") { |value| output = value } }.parse!(@argv)
+      OptionParser.new do |opts|
+        opts.on("--output DIR") { |value| output = value }
+        opts.on("--human") { human = true }
+        opts.on("--json") { human = false }
+      end.parse!(@argv)
       reject_extra_arguments!
       raise OptionParser::MissingArgument, "--output DIR" if output.to_s.empty?
 
-      plan = load_plan(plan_path)
-      state = load_execution_for_status(plan, output)
-      @out.puts JSON.pretty_generate(state)
+      report = ExecutionReport.new(plan: load_plan(plan_path), output: output)
+      human ? report.print(@out) : @out.puts(JSON.pretty_generate(report.document))
       0
     end
 
@@ -168,9 +188,10 @@ module WorkloadOrchestrator
       0
     end
 
-    def parse_runtime_options(require_output:, allow_acknowledge: false)
+    def parse_runtime_options(require_output:, allow_acknowledge: false, detached: false)
       options = { workdir: nil, output: nil, workers_config: nil, acknowledge: false }
       parser = OptionParser.new do |opts|
+        opts.on("--resume") { options[:resume] = true } if detached
         opts.on("--workdir DIR") { |value| options[:workdir] = value }
         opts.on("--output DIR") { |value| options[:output] = value }
         opts.on("--workers-config FILE") { |value| options[:workers_config] = value }
@@ -248,22 +269,6 @@ module WorkloadOrchestrator
       @out.puts "#{row.pool_id}/#{row.worker_name}: PASS#{version}#{digest}"
     end
 
-    def load_execution_for_status(plan, output)
-      path = File.join(File.expand_path(output), "execution.json")
-      state = JSON.parse(File.read(path))
-      unless state["plan_id"] == plan.id && state["plan_sha256"] == plan.sha256
-        raise Error, "output execution identity does not match plan"
-      end
-
-      jobs = JSON.parse(File.read(File.join(File.expand_path(output), "jobs.json")))
-      state.merge(
-        "paused" => File.file?(File.join(File.expand_path(output), "control", "pause")),
-        "jobs" => jobs.fetch("jobs")
-      )
-    rescue Errno::ENOENT, JSON::ParserError, KeyError => e
-      raise Error, "cannot read execution status: #{e.message}"
-    end
-
     def pause_existing_output(output)
       root = File.expand_path(output)
       state = File.join(root, "execution.json")
@@ -309,7 +314,10 @@ module WorkloadOrchestrator
           bin/wlo plan PLAN.json --workdir DIR [--workers-config FILE]
           bin/wlo worker-check PLAN.json [--workers-config FILE] [--execution-profile FILE] [--rpof-executable FILE]
           bin/wlo run PLAN.json --workdir DIR --output DIR [--workers-config FILE]
-          bin/wlo status PLAN.json --output DIR
+          bin/wlo start PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--resume]
+                        [--acknowledge-circuit-breaker] [--execution-profile FILE]
+          bin/wlo status PLAN.json --output DIR [--human | --json]
+          bin/wlo summary PLAN.json --output DIR [--json]
           bin/wlo pause --output DIR
           bin/wlo resume PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--acknowledge-circuit-breaker]
           bin/wlo retry-failed PLAN.json --workdir DIR --output DIR (--all | --job ID ...) --reason TEXT
@@ -317,7 +325,7 @@ module WorkloadOrchestrator
           bin/wlo --version
 
         Logical v0.2 plans require --execution-profile FILE for plan, worker-check,
-        run, resume and retry-failed. Retry also accepts --workers-config FILE.
+        run, start, resume and retry-failed. Retry also accepts --workers-config FILE.
       HELP
       0
     end

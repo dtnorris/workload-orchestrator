@@ -35,6 +35,13 @@ v0.1 plans and their no-profile resume commands remain supported.
 See [the execution-profile contract](docs/execution-profile-v0.1.md) for the
 ownership boundary, examples, CLI, and resume rules.
 
+## Operator commands
+
+Use `bin/wlo start` for detached execution and `bin/wlo summary` for a readable
+progress/result report. Each launch retains its manager PID, log and exit result.
+See [the operator workflow](docs/operator-workflow.md) for pause, detached resume,
+retry and JSON compatibility.
+
 ## Requirements
 
 - Ruby 4.0.x
