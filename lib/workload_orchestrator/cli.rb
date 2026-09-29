@@ -433,6 +433,7 @@ module WorkloadOrchestrator
         Logical v0.2 plans require --execution-profile FILE for plan, worker-check,
         run, start, resume and retry-failed. Retry also accepts --workers-config FILE.
         Provider capacity lifecycle is external to the v0.3 dynamic runtime.
+        Dynamic v0.3 jobs run locally against the selected worker endpoint.
         Retired v0.2 RPOF CLI compatibility remains documented separately.
       HELP
       0

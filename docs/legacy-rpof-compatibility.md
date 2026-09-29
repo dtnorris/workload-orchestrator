@@ -15,6 +15,10 @@ v0.2 execution profiles and rollback. It includes:
 - the old `--rpof-executable`, `--paid-budget` and `--authorize-paid-rpof`
   options.
 
+Legacy workload dispatch rejects v0.3 plans and dynamic worker sources. Request,
+job and result validators load only through explicit historical dispatch APIs.
+See [the dynamic dispatch boundary and inventory](dynamic-dispatch-boundary.md).
+
 These classes are lazy-loaded only when a legacy RPOF profile or API is used.
 Requiring `workload_orchestrator` and running a dynamic v0.3 plan does not load
 them. Existing historical execution state remains readable, including provider

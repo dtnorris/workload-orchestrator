@@ -40,7 +40,9 @@ New v0.3 plans declare logical pools, requirements and opaque jobs. A
 `WorkerSource` supplies validated registry snapshots; WLO selects eligible
 workers, persists exact attempt bindings and runs each job command locally with
 the selected endpoint. Zero compatible workers leaves the execution alive and
-polling.
+polling. Local stdout, stderr, exit status and executor exceptions determine
+command results; no RPOF workload request or result translation participates.
+See [the dynamic dispatch boundary](docs/dynamic-dispatch-boundary.md).
 
 Existing v0.1 local plans and v0.2 execution profiles remain supported. The old
 v0.2 WLO-owned RPOF capacity path is isolated compatibility code pending DW-33;

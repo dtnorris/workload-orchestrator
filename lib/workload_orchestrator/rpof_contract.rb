@@ -2,7 +2,6 @@
 
 require_relative "error"
 require_relative "rpof_contract_values"
-require_relative "rpof_dispatch_validation"
 
 module WorkloadOrchestrator
   # WLO's public boundary. The provider's older wire names belong only in RpofClient.
@@ -16,7 +15,6 @@ module WorkloadOrchestrator
     DIGEST = /\A[0-9a-f]{64}\z/i
 
     extend RpofContractValues
-    extend RpofDispatchValidation
 
     module_function
 
@@ -54,39 +52,24 @@ module WorkloadOrchestrator
       text!(requirements["required_gpu_id"], "required_gpu_id", max: 256) if requirements.key?("required_gpu_id")
     end
 
+    # Explicit historical dispatch calls load only their compatibility validator.
     def dispatch_request!(request)
-      object!(request, %w[contract_version target group_by_affinity jobs])
-      version!(request, DISPATCH_REQUEST)
-      target = request["target"]
-      object!(target, %w[fleet_key expected_fleet_id worker_indices])
-      text!(target["fleet_key"], "fleet_key", max: 64, pattern: ID)
-      text!(target["expected_fleet_id"], "expected_fleet_id", max: 256)
-      indices!(target["worker_indices"])
-      boolean!(request["group_by_affinity"], "group_by_affinity")
-      jobs = array!(request["jobs"], "jobs")
-      jobs.each { |job| job!(job) }
-      ids = jobs.map { |job| job["job_id"] }
-      raise Error, "duplicate job_id" unless ids.uniq.length == ids.length
-
-      request
+      legacy_dispatch_contract.dispatch_request!(request)
     end
 
     def job!(job)
-      object!(job, %w[job_id argv], %w[env affinity])
-      text!(job["job_id"], "job_id", max: 128, pattern: ID)
-      array!(job["argv"], "argv").each do |value|
-        raise Error, "argv must contain strings without NUL bytes" unless value.is_a?(String) && !value.include?("\0")
-      end
-      text!(job["argv"].first, "argv executable")
-      if job.key?("env")
-        env = job["env"]
-        valid = env.is_a?(Hash) && env.all? do |key, value|
-          key.is_a?(String) && key.match?(ENV_KEY) && value.is_a?(String) && !value.include?("\0")
-        end
-        raise Error, "env must map names to NUL-free strings; RPOF does not support null/unset" unless valid
-      end
-      text!(job["affinity"], "affinity", max: 256) if job.key?("affinity")
+      legacy_dispatch_contract.job!(job)
     end
+
+    def dispatch_summary!(result, request, exit_status)
+      legacy_dispatch_contract.dispatch_summary!(result, request, exit_status)
+    end
+
+    def legacy_dispatch_contract
+      require_relative "legacy/rpof_dispatch_contract"
+      Legacy::RpofDispatchContract
+    end
+    private_class_method :legacy_dispatch_contract
 
     def capability_result!(result, request, exit_status)
       boolean!(result["ready"], "ready")

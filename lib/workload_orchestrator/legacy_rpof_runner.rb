@@ -10,6 +10,10 @@ module WorkloadOrchestrator
   # purge. New v0.3 production execution uses Runner + WorkerSource instead.
   class LegacyRpofRunner < Runner
     def initialize(rpof_client:, capacity_session:, admission_policy: WorkerAdmissionPolicy.new, **options)
+      if options.fetch(:plan).priority_scheduling? || options[:worker_source]
+        raise Error, "legacy RPOF dispatch cannot execute dynamic attempts"
+      end
+
       super(**options)
       @rpof_client = rpof_client
       @capacity_session = capacity_session

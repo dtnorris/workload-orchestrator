@@ -18,6 +18,10 @@ module WorkloadOrchestrator
       # loading it into the v0.3 dynamic production process.
       def new(plan:, **options, &block)
         if self == Runner && plan.execution_profile&.rpof?
+          if plan.priority_scheduling? || options[:worker_source]
+            raise Error, "legacy RPOF dispatch cannot execute dynamic attempts"
+          end
+
           require_relative "legacy_rpof_runner"
           return LegacyRpofRunner.new(plan: plan, **options, &block)
         end
