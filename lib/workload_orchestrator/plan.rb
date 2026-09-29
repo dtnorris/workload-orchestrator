@@ -18,6 +18,7 @@ module WorkloadOrchestrator
     FAILURE_KEYS = %w[max_consecutive_failures max_total_failures].freeze
     REQUIREMENT_KEYS = %w[ollama].freeze
     OLLAMA_KEYS = %w[model expected_digest].freeze
+    OLLAMA_CAPABILITY_KEYS = %w[required_context_length require_fully_gpu_resident required_gpu_id].freeze
 
     Pool = Struct.new(
       :id, :worker_names, :required_labels, :ollama_requirement, :max_concurrency,
@@ -144,11 +145,32 @@ module WorkloadOrchestrator
       return nil unless data.key?("ollama")
 
       ollama = mapping!(data.fetch("ollama"), "pools[#{index}].requirements.ollama")
-      validate_keys!(ollama, OLLAMA_KEYS, "pools[#{index}].requirements.ollama")
+      validate_keys!(ollama, OLLAMA_KEYS, "pools[#{index}].requirements.ollama",
+                     optional: logical? ? OLLAMA_CAPABILITY_KEYS : [])
+      validate_ollama_capabilities!(ollama)
       digest = ollama.fetch("expected_digest").to_s.downcase
       raise Error, "expected_digest must be an exact 64-hex digest" unless digest.match?(DIGEST_PATTERN)
 
-      { "model" => non_empty_string!(ollama.fetch("model"), "ollama model"), "expected_digest" => digest }.freeze
+      { "model" => non_empty_string!(ollama.fetch("model"), "ollama model"), "expected_digest" => digest }
+        .merge(ollama.slice(*OLLAMA_CAPABILITY_KEYS)).freeze
+    end
+
+    def validate_ollama_capabilities!(ollama)
+      if ollama.key?("required_context_length")
+        context = ollama["required_context_length"]
+        unless context.is_a?(Integer) && context.positive?
+          raise Error, "required_context_length must be a positive integer"
+        end
+      end
+      if ollama.key?("require_fully_gpu_resident") && ollama["require_fully_gpu_resident"] != true
+        raise Error, "require_fully_gpu_resident must be true when specified"
+      end
+      return unless ollama.key?("required_gpu_id")
+
+      gpu = ollama["required_gpu_id"]
+      unless gpu.is_a?(String) && !gpu.strip.empty? && !gpu.include?("\0") && gpu.length <= 256
+        raise Error, "required_gpu_id must be a non-empty string of at most 256 characters"
+      end
     end
 
     def parse_jobs(value, pools)

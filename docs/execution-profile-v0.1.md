@@ -15,8 +15,8 @@ failure policy, or model/digest requirements.
 | RPOF | Future provider mechanics and independent resource guardian |
 
 `wlo-execution-plan/v0.2` retains v0.1 top-level and job fields. Each pool contains
-`pool_id`, optional `required_labels`, and optional `requirements` (the existing
-exact Ollama model/digest shape). `worker_names` and `max_concurrency` are forbidden
+`pool_id`, optional `required_labels`, and optional `requirements` (exact Ollama model/digest plus optional context and GPU
+requirements; see [RPOF readiness](rpof-readiness.md)). `worker_names` and `max_concurrency` are forbidden
 in v0.2 plans. Hardware/provider placement labels belong in the profile; a plan's
 labels are immutable capability requirements and cannot be removed by a profile.
 The original plan bytes and SHA-256 remain unchanged when binding a profile.
@@ -100,10 +100,11 @@ not a cost estimate, a guardian contract, or evidence of independent enforcement
   pause, and shutdown. Re-reading the profile cannot reset a paid lease.
 
 `validate` accepts this declared shape; `plan` prints it and explicitly reports
-**BLOCKED**. Neither invokes RPOF nor claims readiness. `run`, `resume`, and
-`worker-check` reject RPOF profiles before loading workers or creating execution
-output. Even mixed local/RPOF profiles are rejected as a whole. This patch does
-not lift the zero-cost gate, provision resources, or run a paid pilot.
+**BLOCKED**. Neither invokes RPOF nor claims readiness. `run` and `resume` reject
+RPOF profiles before loading workers or creating execution output, including
+mixed profiles. `worker-check` supports an explicit existing-fleet `target` and
+`--rpof-executable FILE`; see [RPOF readiness](rpof-readiness.md). Readiness does
+not lift the execution gate or provision resources.
 
 ## Resume and compatibility
 

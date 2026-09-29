@@ -88,8 +88,9 @@ rejected. The result preserves provider diagnostics/capabilities. A ready result
 must identify the requested fleet key, a nonempty fleet ID, and the selected
 workers. Explicitly selected indices must match exactly.
 
-Pool-to-requirement translation and readiness integration are step 4; this
-interface takes an already-built request rather than interpreting a WLO plan.
+Step 4 [pool readiness](rpof-readiness.md) translates logical requirements and
+profile targets into this interface. The client continues to accept an already-built
+request without interpreting a WLO plan.
 
 ## Opaque dispatch request
 

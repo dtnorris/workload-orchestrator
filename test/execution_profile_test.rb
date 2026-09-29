@@ -134,7 +134,7 @@ class ExecutionProfileTest < Minitest::Test
     code, out, err = cli("plan")
     assert_equal 0, code, err
     assert_includes out, "BLOCKED"
-    %w[run resume worker-check].each do |command|
+    %w[run resume].each do |command|
       code, _out, err = cli(command)
       assert_equal 1, code
       assert_includes err, "RPOF execution is not implemented"

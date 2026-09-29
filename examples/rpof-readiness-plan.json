@@ -1,0 +1,33 @@
+{
+  "contract_version": "wlo-execution-plan/v0.2",
+  "plan_id": "rpof-readiness-example",
+  "failure_policy": {
+    "max_consecutive_failures": 2,
+    "max_total_failures": 3
+  },
+  "pools": [
+    {
+      "pool_id": "inference",
+      "requirements": {
+        "ollama": {
+          "model": "fixture:latest",
+          "expected_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "required_context_length": 262144,
+          "require_fully_gpu_resident": true,
+          "required_gpu_id": "NVIDIA A40"
+        }
+      }
+    }
+  ],
+  "jobs": [
+    {
+      "job_id": "fixture-job",
+      "pool_id": "inference",
+      "argv": [
+        "ruby",
+        "-e",
+        "puts 'fixture'"
+      ]
+    }
+  ]
+}

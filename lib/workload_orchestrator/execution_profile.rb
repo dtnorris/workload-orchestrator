@@ -3,10 +3,11 @@
 require "delegate"
 require "digest"
 require "json"
+require_relative "rpof_contract"
 
 module WorkloadOrchestrator
-  # Placement policy is separate from workload intent. RPOF is declaration-only
-  # until its independently enforced budget and dispatch contracts are implemented.
+  # Placement policy is separate from workload intent. RPOF supports readiness;
+  # execution awaits independently enforced budget and dispatch contracts.
   class ExecutionProfile
     CONTRACT_VERSION = "wlo-execution-profile/v0.1"
     BACKENDS = %w[local fixed_remote rpof].freeze
@@ -60,6 +61,10 @@ module WorkloadOrchestrator
       document.fetch("pools").any? { |row| row.fetch("backend") == "rpof" }
     end
 
+    def binding_for(pool_id)
+      document.fetch("pools").find { |row| row.fetch("pool_id") == pool_id }
+    end
+
     def ensure_runnable!
       return unless rpof?
 
@@ -97,7 +102,9 @@ module WorkloadOrchestrator
       raise Error, "unsupported profile backend #{backend.inspect}" unless BACKENDS.include?(backend)
 
       if backend == "rpof"
-        keys!(row, COMMON_POOL_KEYS + %w[min_workers desired_workers max_hourly_rate_usd], "rpof pool")
+        keys!(row, COMMON_POOL_KEYS + %w[min_workers desired_workers max_hourly_rate_usd], "rpof pool",
+              optional: ["target"])
+        validate_target!(row["target"]) if row.key?("target")
         %w[min_workers desired_workers].each { |key| positive_integer!(row[key], key) }
         unless row["min_workers"] <= row["desired_workers"]
           raise Error, "min_workers cannot exceed desired_workers"
@@ -118,6 +125,23 @@ module WorkloadOrchestrator
       end
       positive_integer!(row["max_concurrency"], "max_concurrency")
       raise Error, "max_concurrency exceeds pool capacity" if row["max_concurrency"] > capacity
+    end
+
+    def validate_target!(target)
+      keys!(target, %w[fleet_key worker_selector], "rpof target")
+      RpofContract.text!(target["fleet_key"], "fleet_key", max: 64, pattern: RpofContract::ID)
+      selector = target["worker_selector"]
+      raise Error, "worker_selector must be an object" unless selector.is_a?(Hash)
+
+      case selector["mode"]
+      when "all"
+        keys!(selector, %w[mode], "worker_selector")
+      when "indices"
+        keys!(selector, %w[mode indices], "worker_selector")
+        RpofContract.indices!(selector["indices"])
+      else
+        raise Error, "worker_selector.mode must be all or indices"
+      end
     end
 
     def validate_budget!

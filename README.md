@@ -28,7 +28,7 @@ WLO does not interpret the domain meaning of a workload or its results.
 
 New v0.2 plans declare logical pools and opaque jobs. Select placement separately
 with `--execution-profile FILE`; local and fixed remote endpoints use configured
-zero-cost workers. RPOF profiles are declaration-only and fail closed on execution
+zero-cost workers. RPOF profiles support checks of existing capacity and fail closed on execution
 until paid safety, fulfillment, and remote dispatch are implemented. Existing
 v0.1 plans and their no-profile resume commands remain supported.
 
@@ -195,7 +195,8 @@ plan commands through an implicit shell.
 
 The additive [RPOF client seam](docs/rpof-client-v0.1.md) provides versioned
 capability checks and opaque dispatch through the RPOF executable for future
-remote executors. It is a library boundary; paid execution and integration with
+remote executors. [RPOF pool readiness](docs/rpof-readiness.md) connects
+`worker-check` to that seam using logical requirements and an existing-fleet target. It is a library boundary; paid execution and integration with
 the WLO runner remain separate milestones.
 
 ```bash

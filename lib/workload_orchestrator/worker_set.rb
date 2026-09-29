@@ -30,8 +30,14 @@ module WorkloadOrchestrator
         raise Error, "logical plan requires --execution-profile FILE"
       end
       plan.execution_profile&.ensure_runnable!
-      plan.pools.each { |pool| validate_pool!(pool) }
+      validate_pools!(plan.pools)
       plan
+    end
+
+    # Readiness of mixed profiles validates only their fixed worker bindings.
+    # Execution still passes through validate_plan! and its RPOF prohibition.
+    def validate_pools!(pools)
+      pools.each { |pool| validate_pool!(pool) }
     end
 
     def execution_sha256(plan)
@@ -69,6 +75,11 @@ module WorkloadOrchestrator
 
     def validate_ollama!(worker, pool)
       return unless pool.ollama_requirement
+      extended = pool.ollama_requirement.keys & Plan::OLLAMA_CAPABILITY_KEYS
+      unless extended.empty?
+        raise Error, "pool #{pool.id.inspect}: #{extended.join(', ')} readiness requires the RPOF backend; " \
+                     "fixed endpoints cannot verify these requirements"
+      end
       return if worker.type == "ollama" && worker.base_url
 
       raise Error, "pool #{pool.id.inspect} requires Ollama but worker #{worker.name.inspect} is not an Ollama worker"

@@ -76,9 +76,10 @@ module WorkloadOrchestrator
       options = parse_worker_options
       reject_extra_arguments!
       plan = load_bound_plan(plan_path, options)
-      plan.execution_profile&.ensure_runnable!
-      workers = load_workers(options)
-      results = WorkerCheck.new.check_plan!(plan, workers)
+      fixed = plan.pools.any? { |pool| plan.execution_profile&.binding_for(pool.id)&.fetch("backend") != "rpof" }
+      workers = load_workers(options) if fixed
+      client = RpofClient.new(executable: options[:rpof_executable]) if options[:rpof_executable]
+      results = WorkerCheck.new(rpof_client: client).check_plan!(plan, workers)
       results.each { |row| print_worker_result(row) }
       0
     end
@@ -186,6 +187,7 @@ module WorkloadOrchestrator
     def parse_worker_options
       options = { workers_config: nil }
       OptionParser.new do |opts|
+        opts.on("--rpof-executable FILE") { |value| options[:rpof_executable] = value }
         opts.on("--workers-config FILE") { |value| options[:workers_config] = value }
         opts.on("--execution-profile FILE") { |value| options[:execution_profile] = value }
       end.parse!(@argv)
@@ -237,6 +239,10 @@ module WorkloadOrchestrator
     end
 
     def print_worker_result(row)
+      if row.provider_result
+        @out.puts "#{row.pool_id}/#{row.worker_name}: PASS #{row.detail}"
+        return
+      end
       version = row.version ? " ollama=#{row.version}" : ""
       digest = row.model_digest ? " digest=#{row.model_digest}" : ""
       @out.puts "#{row.pool_id}/#{row.worker_name}: PASS#{version}#{digest}"
@@ -301,7 +307,7 @@ module WorkloadOrchestrator
         Usage:
           bin/wlo validate PLAN.json [--execution-profile FILE]
           bin/wlo plan PLAN.json --workdir DIR [--workers-config FILE]
-          bin/wlo worker-check PLAN.json [--workers-config FILE]
+          bin/wlo worker-check PLAN.json [--workers-config FILE] [--execution-profile FILE] [--rpof-executable FILE]
           bin/wlo run PLAN.json --workdir DIR --output DIR [--workers-config FILE]
           bin/wlo status PLAN.json --output DIR
           bin/wlo pause --output DIR
