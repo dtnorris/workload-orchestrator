@@ -103,15 +103,18 @@ module WorkloadOrchestrator
       plan = load_bound_plan(plan_path, options)
       workers = load_workers_for_plan(options, plan)
       remote = remote_execution(plan, options)
-      runner = Runner.new(
+      runner_options = {
         plan: plan,
         workers: workers,
         workdir: require_workdir(options),
         output_dir: options.fetch(:output),
-        out: detached ? $stdout : @out,
-        rpof_client: remote && remote.fetch(:client),
-        capacity_session: remote && remote.fetch(:session)
-      )
+        out: detached ? $stdout : @out
+      }
+      if remote
+        runner_options[:rpof_client] = remote.fetch(:client)
+        runner_options[:capacity_session] = remote.fetch(:session)
+      end
+      runner = Runner.new(**runner_options)
       return start_manager(runner, resume, options) if detached
 
       status = runner.run(resume: resume, acknowledge_circuit_breaker: options.fetch(:acknowledge, false))
@@ -410,18 +413,17 @@ module WorkloadOrchestrator
         Usage:
           bin/wlo validate PLAN.json [--execution-profile FILE]
           bin/wlo plan PLAN.json --workdir DIR [--workers-config FILE]
-          bin/wlo worker-check PLAN.json [--workers-config FILE] [--execution-profile FILE] [--rpof-executable FILE]
+          bin/wlo worker-check PLAN.json [--workers-config FILE] [--execution-profile FILE]
           bin/wlo run PLAN.json --workdir DIR --output DIR [--workers-config FILE]
-                      [--execution-profile FILE --rpof-executable FILE --paid-budget FILE --authorize-paid-rpof]
+                      [--execution-profile FILE]
           bin/wlo start PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--resume]
                         [--acknowledge-circuit-breaker] [--execution-profile FILE]
-                        [--rpof-executable FILE --paid-budget FILE --authorize-paid-rpof]
           bin/wlo status PLAN.json --output DIR [--human | --json]
           bin/wlo summary PLAN.json --output DIR [--json]
           bin/wlo watch PLAN.json --output DIR [--interval SECONDS]
           bin/wlo pause --output DIR
           bin/wlo resume PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--acknowledge-circuit-breaker]
-                         [--execution-profile FILE --rpof-executable FILE --paid-budget FILE --authorize-paid-rpof]
+                         [--execution-profile FILE]
           bin/wlo retry-failed PLAN.json --workdir DIR --output DIR (--all | --job ID ...) --reason TEXT
                                [--acknowledge-circuit-breaker]
           bin/wlo import-terminal PLAN.json HANDOFF.json --workdir DIR --output DIR
@@ -430,6 +432,8 @@ module WorkloadOrchestrator
 
         Logical v0.2 plans require --execution-profile FILE for plan, worker-check,
         run, start, resume and retry-failed. Retry also accepts --workers-config FILE.
+        Provider capacity lifecycle is external to the v0.3 dynamic runtime.
+        Retired v0.2 RPOF CLI compatibility remains documented separately.
       HELP
       0
     end

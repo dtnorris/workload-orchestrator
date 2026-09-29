@@ -25,5 +25,8 @@ class BootstrapTest < Minitest::Test
     assert_includes out, "bin/wlo validate PLAN.json"
     assert_includes out, "bin/wlo run PLAN.json"
     assert_includes out, "bin/wlo resume PLAN.json"
+    assert_includes out, "Provider capacity lifecycle is external to the v0.3 dynamic runtime."
+    refute_includes out, "--authorize-paid-rpof"
+    refute_includes out, "--paid-budget"
   end
 end

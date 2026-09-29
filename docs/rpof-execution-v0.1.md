@@ -1,5 +1,8 @@
 # WLO-owned RPOF execution v0.1
 
+> Legacy v0.2 compatibility: production v0.3 commands run locally against the
+> selected registry endpoint. This dispatch path remains only until DW-33.
+
 Step 8 makes WLO the execution/state authority for RPOF-backed jobs without
 creating a second remote scheduler. WLO claims one job, records its attempt as
 running, selects one worker from the Step-6 handoff, and invokes RPOF with a

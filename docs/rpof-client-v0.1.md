@@ -1,5 +1,8 @@
 # WLO to RPOF client seam v0.1
 
+> Legacy v0.2 compatibility: the production v0.3 runtime consumes
+> `WorkerSource` and does not load this provider client.
+
 ## Scope and ownership
 
 `WorkloadOrchestrator::RpofClient` owns the process/JSON boundary for capability

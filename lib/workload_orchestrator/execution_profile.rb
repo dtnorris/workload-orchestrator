@@ -3,7 +3,6 @@
 require "delegate"
 require "digest"
 require "json"
-require_relative "rpof_contract"
 
 module WorkloadOrchestrator
   # Placement policy is separate from workload intent.

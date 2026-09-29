@@ -1,5 +1,8 @@
 # WLO paid-budget contract v0.1
 
+> Legacy v0.2 compatibility: production v0.3 capacity budgets and guardians are
+> owned by RPOF. This WLO contract remains only for rollback until DW-33.
+
 ## Scope
 
 This contract defines WLO's provider-neutral declaration and lifecycle plus a

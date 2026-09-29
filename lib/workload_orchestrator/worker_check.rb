@@ -3,7 +3,6 @@
 require "json"
 require "net/http"
 require "uri"
-require_relative "rpof_readiness"
 
 module WorkloadOrchestrator
   class WorkerCheck

@@ -21,9 +21,10 @@ WLO owns:
 
 - strict execution-plan validation;
 - worker selection and label checks;
-- zero-cost admission for local/fixed workers and guarded RPOF paid capacity;
+- zero-cost admission for configured local/fixed compatibility workers;
+- provider-neutral dynamic worker selection and reconciliation;
 - optional Ollama model/digest readiness checks;
-- direct local command dispatch and single-attempt RPOF dispatch;
+- direct local command dispatch to selected dynamic endpoints;
 - bounded pool concurrency;
 - cross-process job claims;
 - pause and resume;
@@ -32,13 +33,13 @@ WLO owns:
 - failure circuit breaking;
 - immutable plan/output identity;
 - stdout/stderr/metadata execution evidence; and
-- execution-only status reporting;
-- original paid-budget binding, capacity fulfillment and lifecycle control.
+- execution-only status reporting; and
+- immutable attempt-local worker identity and registry evidence.
 
 RPOF owns RunPod fleet/resource mechanics, model/bootstrap readiness, tunnels,
-leases and cost safeguards, provider scaling/replacement and opaque dispatch.
-WLO's paid execution calls those provider primitives within its own guarded
-budget and lifecycle state.
+leases and cost safeguards, provider scaling/replacement, campaign admission
+and teardown. It publishes ready workers through the provider-neutral registry.
+WLO reacts only to that registry and never repairs provider infrastructure.
 
 Dynamic executions retain the same execution ownership while idle. See
 [dynamic-polling.md](dynamic-polling.md) for bounded polling,
@@ -82,21 +83,24 @@ addition to the state lock. Existing per-job claims remain in use. The process
 lock is released by the OS on exit. This serializes executors for one output;
 configured worker concurrency within an executor is unchanged.
 
-## Cost boundary
+## Capacity boundary
 
-Configured local/fixed workers remain zero-cost only. RPOF execution is a
-separate guarded path: an immutable paid-budget document must match the exact
-plan/profile bytes; RPOF independently enforces the cumulative cap, runtime
-deadline, reservations and guardian cleanup; and WLO dispatches only within the
-Step-6 capacity scope. Pause/retry resume never re-arms, re-fulfills or extends
-that original authority.
+The v0.3 production runtime has no paid-capacity authority. RPOF independently
+enforces cumulative spend, runtime deadlines, leases, admission and guardian
+cleanup. WLO may pause or stop its execution, but those actions do not create,
+retain or destroy provider resources. An empty or incompatible registry is the
+normal DW-16 waiting state.
+
+The earlier WLO-owned paid-budget and fulfillment runtime remains isolated for
+v0.2 rollback compatibility and is loaded only when an old RPOF execution
+profile is explicitly used. See [legacy-rpof-compatibility.md](legacy-rpof-compatibility.md).
 
 
 
 ## Runtime placement overlay
 
-The provider-neutral handoff is now a v0.2 logical plan plus a separate WLO
-execution profile. See [execution-profile-v0.1.md](execution-profile-v0.1.md).
-AFW emits no worker names, local-only placement labels, or concurrency in new
-plans. WLO binds placement at execution time and freezes that additional identity
-for resume. RPOF profile validation is not authorization to provision capacity.
+The production provider-neutral handoff is a v0.3 logical plan plus a
+`WorkerSource`. AFW emits no provider or resource identity. WLO binds each
+attempt to a validated registry worker and freezes that identity and snapshot
+as execution evidence. The v0.2 execution-profile overlay remains compatibility
+only; see [execution-profile-v0.1.md](execution-profile-v0.1.md).

@@ -1,5 +1,8 @@
 # RPOF pool readiness
 
+> Legacy v0.2 compatibility: production v0.3 readiness comes from validated
+> worker-registry state and capability matching.
+
 `wlo worker-check` can validate already-existing RPOF capacity without AFW.
 It translates the logical pool's requirements through WLO's existing process/JSON
 client. Only the RPOF `capability-check` operation is invoked. WLO does not create,

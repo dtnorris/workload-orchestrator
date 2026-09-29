@@ -1,5 +1,8 @@
 # Execution-pool fulfillment v0.1
 
+> Legacy v0.2 compatibility: production v0.3 WLO schedules registry workers and
+> performs no capacity fulfillment. This API remains only until DW-33.
+
 Step 6 adds an explicit paid-capacity library API. Step 8 consumes that API from
 the WLO runner; fulfillment itself still does not schedule or interpret jobs.
 Existing fixed-worker zero-cost gates remain, and AFW's legacy production path

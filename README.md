@@ -5,8 +5,9 @@ resumable execution of declarative command workloads across configured workers.
 
 ## Status
 
-WLO runs generic v0.1 local plans and v0.2 logical plans with separate
-execution profiles. It provides:
+WLO's production runtime executes provider-neutral v0.3 plans against a dynamic
+`WorkerSource` registry. Generic v0.1 local execution and v0.2 execution-profile
+compatibility remain available during migration. WLO provides:
 
 - strict JSON execution-plan validation;
 - generic pools and opaque command jobs;
@@ -20,26 +21,31 @@ execution profiles. It provides:
 - explicit, audited failed-job retry with preserved attempt evidence;
 - failure circuit breaking;
 - immutable plan/output identity;
-- execution status reporting; and
-- guarded RPOF paid-capacity fulfillment, dispatch, scaling and lifecycle.
+- execution status reporting;
+- capability-based dynamic scheduling across heterogeneous workers; and
+- Mac-local command execution against the exact selected worker endpoint.
 
-Local and fixed-remote configured workers must remain zero-cost. RPOF-backed
-execution requires an explicit profile, original finite paid budget, RPOF
-executable and operator authorization.
+Provider capacity campaigns run independently in RPOF. WLO consumes their
+provider-neutral worker registry and owns no provider budget, admission,
+resource creation, retention or teardown decision.
 
 WLO does not interpret the domain meaning of a workload or its results. AFW
 owns AdventureFinder selection, qualification, frozen scoring contracts and
 provenance. RPOF owns provider fleets, readiness/bootstrap/tunnels, leases,
-cost safeguards and provider dispatch primitives.
+cost safeguards, scaling, replacement and teardown.
 
 ## Provider-neutral workloads
 
-New v0.2 plans declare logical pools and opaque jobs. Select placement separately
-with `--execution-profile FILE`; local and fixed remote endpoints use configured
-zero-cost workers. RPOF profiles execute only through an explicitly approved
-paid-budget document, the Step-6 guarded fulfillment scope, and single-attempt
-RPOF dispatch. Existing v0.1 plans and their no-profile resume commands remain
-supported.
+New v0.3 plans declare logical pools, requirements and opaque jobs. A
+`WorkerSource` supplies validated registry snapshots; WLO selects eligible
+workers, persists exact attempt bindings and runs each job command locally with
+the selected endpoint. Zero compatible workers leaves the execution alive and
+polling.
+
+Existing v0.1 local plans and v0.2 execution profiles remain supported. The old
+v0.2 WLO-owned RPOF capacity path is isolated compatibility code pending DW-33;
+it is not loaded by the dynamic production runtime. See
+[legacy RPOF compatibility](docs/legacy-rpof-compatibility.md).
 
 See [the execution-profile contract](docs/execution-profile-v0.1.md) for the
 ownership boundary, examples, CLI, and resume rules.
@@ -210,8 +216,8 @@ Use `--workers-config FILE` or `WLO_WORKERS_CONFIG` to select a machine-local
 worker file. Otherwise WLO reads `config/workers.yml`.
 
 Local and fixed-remote worker bindings reject positive declared hourly rates.
-RPOF-backed pools use the separately declared paid budget and guarded capacity
-lifecycle; a worker config cannot authorize paid resources.
+Dynamic workers arrive through the provider-neutral registry; WLO does not use
+worker configuration as authority to create or retain paid resources.
 
 ## Security boundary
 
@@ -221,10 +227,11 @@ plan commands through an implicit shell.
 
 ## Development
 
-The [RPOF client seam](docs/rpof-client-v0.1.md) provides versioned capability
-checks and opaque dispatch through the RPOF executable. WLO uses it for
-[pool readiness](docs/rpof-readiness.md) and guarded
-[remote execution](docs/rpof-execution-v0.1.md).
+The production dynamic path is documented in
+[dynamic polling](docs/dynamic-polling.md) and
+[dynamic worker loss](docs/dynamic-worker-loss.md). Historical RPOF client and
+dispatch documents are retained under
+[legacy compatibility](docs/legacy-rpof-compatibility.md).
 
 ```bash
 bundle exec rake
@@ -234,16 +241,16 @@ script/check
 See `docs/execution-plan-v0.1.md` for the frozen plan shape and
 `docs/architecture.md` for ownership boundaries.
 
-## Paid-budget foundation
+## Legacy paid-budget compatibility
 
-The [paid-budget contract](docs/paid-budget-v0.1.md) provides explicit finite
-limits, durable execution binding, and lifecycle coordination with RPOF's
-independent guardian. The guarded RPOF execution path consumes this contract;
-local and fixed-remote paid-worker rejection remains in force.
+The [paid-budget contract](docs/paid-budget-v0.1.md) is retained for v0.2
+rollback compatibility. It is lazy-loaded only when an old RPOF execution
+profile is used. RPOF campaigns are the production authority for budgets,
+leases and guardians.
 
-## Execution-pool fulfillment and remote execution
+## Legacy execution-pool fulfillment and remote execution
 
-The [step 6 capacity API](docs/execution-pool-fulfillment-v0.1.md) joins logical
+The [step 6 capacity API](docs/execution-pool-fulfillment-v0.1.md) historically joins logical
 model requirements with WLO worker counts and cost ceilings. Explicitly authorized
 library callers can obtain ready RPOF capacity inside a guarded budget scope;
 scope exit requests teardown. The adapter preserves RPOF's independent guardian.
@@ -257,4 +264,5 @@ Pause drains active attempts and retains no independent permission to spend. A
 resume can reattach only to the original budget binding, deadline and capacity;
 it never arms or fulfills again. If the guardian has expired that window, the
 fleet identity changed, or readiness/ownership no longer verifies, resume fails
-closed. See [RPOF execution](docs/rpof-execution-v0.1.md).
+closed. This compatibility surface is retained until DW-33 and is excluded from
+the v0.3 dynamic loader and runtime. See [RPOF execution](docs/rpof-execution-v0.1.md).
