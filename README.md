@@ -205,3 +205,10 @@ script/check
 
 See `docs/execution-plan-v0.1.md` for the frozen plan shape and
 `docs/architecture.md` for ownership boundaries.
+
+## Paid-budget foundation
+
+The [paid-budget contract](docs/paid-budget-v0.1.md) provides explicit finite
+limits, durable execution binding, and lifecycle coordination with RPOF's
+independent guardian. This library foundation does not enable paid execution;
+the nonzero-cost-worker and RPOF-profile execution blocks remain in place.

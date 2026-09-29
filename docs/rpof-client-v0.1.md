@@ -17,8 +17,10 @@ gate remains in force. Do not use this transport as a production paid campaign
 entry point: budget/guardian ownership, remote state integration and terminal
 cleanup must land before that integration is enabled (steps 5, 8 and 10).
 
-There are deliberately no fulfillment, budget, create, scale, admission or
-shutdown methods. AFW's current callers remain until their replacements land.
+The base client has no fulfillment, budget, create, scale, admission or
+shutdown methods. The separate `RpofBudgetClient` and `PaidBudgetLifecycle` add
+[step 5 budget control](paid-budget-v0.1.md), without provisioning or enabling
+paid execution. AFW's current callers remain until their replacements land.
 Do not remove the old AFW client as part of this additive foundation patch.
 
 ## Frozen public versions and wire compatibility
