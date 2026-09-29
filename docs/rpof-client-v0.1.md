@@ -16,10 +16,10 @@ provider directory for every WLO-owned attempt and reconciles the validated
 single-job summary into `ExecutionStore`.
 
 The base client has no fulfillment, budget, create, scale, admission or
-shutdown methods. The separate `RpofBudgetClient` and `PaidBudgetLifecycle` add
-[step 5 budget control](paid-budget-v0.1.md), without provisioning or enabling
-paid execution. AFW's current callers remain until their replacements land.
-Do not remove the old AFW client as part of this additive foundation patch.
+shutdown methods. The separate `RpofBudgetClient` and `PaidBudgetLifecycle` supply
+[paid budget control](paid-budget-v0.1.md). WLO's fulfillment and runner
+consume those interfaces; historical AFW client identifiers are outside the
+current execution path.
 
 ## Frozen public versions and wire compatibility
 
@@ -106,7 +106,7 @@ manifest parsing or score interpretation. Shell syntax in arguments remains
 literal unless the job explicitly invokes a shell. `env` values must be strings:
 WLO plan null/unset values cannot be represented by the existing RPOF protocol
 and are rejected rather than silently dropped. Plan `pool_id`/`group_id` fields
-are not wire fields; a future executor must deliberately construct its request.
+are not wire fields; WLO constructs the provider request for each attempt.
 
 `workdir` is canonicalized and must exist. `output_dir` must not already exist,
 including as an empty directory or symlink. The client creates it atomically

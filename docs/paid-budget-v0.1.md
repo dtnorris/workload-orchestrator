@@ -2,11 +2,11 @@
 
 ## Scope
 
-Migration step 5 provides a provider-neutral declaration and lifecycle plus a
-process/JSON adapter to the existing RPOF guardian. It does not provision, scale,
-lease, close, disable a guardian, or enable paid execution. Both the runner's
-nonzero-cost fixed-worker rejection and explicit RPOF paid authorization remain
-unchanged. AFW's legacy paid callers are not removed yet.
+This contract defines WLO's provider-neutral declaration and lifecycle plus a
+process/JSON adapter to RPOF's independent guardian. The budget module itself
+does not provision or dispatch; WLO's guarded RPOF runner composes it with
+capacity fulfillment. Local/fixed paid-worker rejection and explicit RPOF
+paid authorization remain in force.
 
 `PaidBudget`, `PaidBudgetLifecycle`, and `RpofBudgetClient` are loaded by
 `require "workload_orchestrator"`. No AFW or RPOF Ruby implementation is imported.
@@ -34,7 +34,7 @@ execution_profile: profile)`. With an execution profile, its three declared
 ceilings must agree exactly: `max_total_cost_usd` maps to
 `max_cumulative_compute_usd`; hourly ceiling and runtime map directly. The exact
 profile SHA is retained in the lifecycle binding. Omit the profile only for
-standalone library use; the future profile executor must supply it.
+standalone library use; the RPOF runner supplies it.
 
 Let P = guardian polling seconds, H = heartbeat timeout, T = teardown reserve,
 R = aggregate hourly ceiling, and C = cumulative compute cap:
@@ -55,7 +55,7 @@ The adapter translates the declaration to
 `rpof-production-burst-budget-state/v0.1` responses. RPOF's existing wire contract
 and guardian are unchanged. Expected cost and hourly ceiling remain WLO policy;
 the existing provider contract carries the cumulative cap and runtime/heartbeat
-limits. WLO checks reported aggregate rate, while future fulfillment must check
+limits. WLO checks reported aggregate rate, while fulfillment checks
 requested rates and enforce the aggregate ceiling before each paid mutation.
 A readiness check is not an atomic reservation.
 
@@ -98,7 +98,7 @@ latches, stops heartbeats, and requests teardown. Foreground `check!` also fails
 closed. A timeout or malformed arm response is treated as potentially armed:
 teardown is attempted even without a successful acknowledgement. If RPOF is
 unreachable, heartbeat cessation and the original lease remain the independent
-fallback. `finish!` must be called in an `ensure` by future campaign owners;
+fallback. `finish!` must be called in an `ensure` by the owning lifecycle caller;
 false means teardown was not acknowledged, not that resources are absent.
 
 Budget subprocesses have a finite timeout (30 seconds by default), use literal

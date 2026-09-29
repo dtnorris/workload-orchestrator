@@ -5,7 +5,8 @@ resumable execution of declarative command workloads across configured workers.
 
 ## Status
 
-WLO v0.1 implements a deliberately small, zero-cost local execution kernel:
+WLO runs generic v0.1 local plans and v0.2 logical plans with separate
+execution profiles. It provides:
 
 - strict JSON execution-plan validation;
 - generic pools and opaque command jobs;
@@ -20,9 +21,16 @@ WLO v0.1 implements a deliberately small, zero-cost local execution kernel:
 - failure circuit breaking;
 - immutable plan/output identity;
 - execution status reporting; and
-- a hard v0.1 gate rejecting workers with a positive hourly rate.
+- guarded RPOF paid-capacity fulfillment, dispatch, scaling and lifecycle.
 
-WLO does not interpret the domain meaning of a workload or its results.
+Local and fixed-remote configured workers must remain zero-cost. RPOF-backed
+execution requires an explicit profile, original finite paid budget, RPOF
+executable and operator authorization.
+
+WLO does not interpret the domain meaning of a workload or its results. AFW
+owns AdventureFinder selection, qualification, frozen scoring contracts and
+provenance. RPOF owns provider fleets, readiness/bootstrap/tunnels, leases,
+cost safeguards and provider dispatch primitives.
 
 ## Provider-neutral workloads
 
@@ -189,9 +197,9 @@ retries because older binaries do not understand retry authorization.
 Use `--workers-config FILE` or `WLO_WORKERS_CONFIG` to select a machine-local
 worker file. Otherwise WLO reads `config/workers.yml`.
 
-WLO v0.1 rejects any selected worker whose `hourly_rate_usd` is greater than
-zero. Paid-resource lifecycle is intentionally outside this first execution
-kernel.
+Local and fixed-remote worker bindings reject positive declared hourly rates.
+RPOF-backed pools use the separately declared paid budget and guarded capacity
+lifecycle; a worker config cannot authorize paid resources.
 
 ## Security boundary
 
@@ -201,11 +209,10 @@ plan commands through an implicit shell.
 
 ## Development
 
-The additive [RPOF client seam](docs/rpof-client-v0.1.md) provides versioned
-capability checks and opaque dispatch through the RPOF executable for future
-remote executors. [RPOF pool readiness](docs/rpof-readiness.md) connects
-`worker-check` to that seam using logical requirements and an existing-fleet target. It is a library boundary; paid execution and integration with
-the WLO runner remain separate milestones.
+The [RPOF client seam](docs/rpof-client-v0.1.md) provides versioned capability
+checks and opaque dispatch through the RPOF executable. WLO uses it for
+[pool readiness](docs/rpof-readiness.md) and guarded
+[remote execution](docs/rpof-execution-v0.1.md).
 
 ```bash
 bundle exec rake
@@ -219,8 +226,8 @@ See `docs/execution-plan-v0.1.md` for the frozen plan shape and
 
 The [paid-budget contract](docs/paid-budget-v0.1.md) provides explicit finite
 limits, durable execution binding, and lifecycle coordination with RPOF's
-independent guardian. This library foundation does not enable paid execution;
-the nonzero-cost-worker and RPOF-profile execution blocks remain in place.
+independent guardian. The guarded RPOF execution path consumes this contract;
+local and fixed-remote paid-worker rejection remains in force.
 
 ## Execution-pool fulfillment and remote execution
 

@@ -33,7 +33,7 @@ The matching RPOF profile pool may add a `target`:
 
 Alternatively use `"worker_selector": {"mode": "all"}` for all active workers.
 Indices must be unique positive integers. A target is optional for declaration
-and future fulfillment, but mandatory for readiness against existing resources.
+and fulfillment, but mandatory for readiness against existing resources.
 No active fleet is guessed. It resolves to the current fleet generation under
 that key; the result reports the concrete `fleet_id` and selected indices.
 
@@ -82,10 +82,12 @@ fixed endpoint fails explicitly; WLO does not silently ignore unsupported
 requirements. RPOF also rejects arbitrary `required_labels`, which its capability
 contract cannot verify. Legacy v0.1 plan syntax remains unchanged.
 
-`validate` still checks syntax and `plan` reports RPOF execution as blocked.
-`run`, `resume`, and retry retain the execution gate for RPOF, including mixed
-profiles. A readiness pass neither enforces the profile's paid budget nor grants
-permission to provision or dispatch. Steps 5, 6, and 8 must implement that path.
+`validate` checks syntax and `plan` inspects the RPOF declaration without
+acquiring paid capacity. Paid start requires WLO's guarded budget/capacity path.
+A readiness pass alone neither enforces the profile's paid budget nor grants
+permission to provision or dispatch. WLO's start/resume path separately requires
+the original finite budget, guarded fulfillment, explicit authorization, and
+RPOF's independent provider safeguards.
 
 No changes to AFW or RPOF are required. The step 3 client translates the public
 `wlo-rpof-capability-check-request/v0.1` into RPOF's existing exact-digest

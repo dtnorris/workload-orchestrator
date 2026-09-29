@@ -42,7 +42,7 @@ Resume reopens the same binding and evaluates the same ledger. It verifies the
 unchanged deadline, handoff identity, fleet readiness, worker indices, rates and
 budget ownership. It never invokes arm or fulfillment. Expired, stale, changed
 or already-tearing-down state is rejected. Successful completion requests
-teardown; full terminal absence confirmation remains Step 10.
+teardown and records cleanup disposition; RPOF verifies provider absence.
 
 `retry-failed` archives the complete WLO/provider attempt and clears an
 infrastructure dispatch halt only when the selected retry includes the exact
@@ -57,5 +57,6 @@ interrupts its dispatcher, terminates active workload process groups and writes
 interrupted evidence. If either process cannot complete cleanup, the independent
 guardian, cumulative cap and original runtime lease remain in force.
 
-Step 8 does not add adaptive scaling, worker admission, terminal campaign policy,
-verified provider absence, or legacy AFW cleanup.
+Later guarded-capacity work added worker admission, scaling and terminal
+lifecycle under the original budget. RPOF retains provider deletion verification.
+The historical AFW execution bridge is outside WLO's current contract.

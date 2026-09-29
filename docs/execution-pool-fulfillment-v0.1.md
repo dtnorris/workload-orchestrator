@@ -121,8 +121,8 @@ original runtime lease and durable pre-mutation reservations, as specified in
 [the paid-budget contract](paid-budget-v0.1.md). WLO never disables that guardian.
 
 The existing guardian-host availability and provider deletion-window assumptions
-still apply. Step 8 does not implement terminal absence polling; that remains a
-Step-10 concern.
+still apply. WLO's lifecycle records cleanup disposition and RPOF verifies
+provider absence before a resource is treated as retired.
 
 ## Validation baseline
 

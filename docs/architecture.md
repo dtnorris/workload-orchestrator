@@ -10,7 +10,7 @@ produced a workload or interpret domain-specific results.
 
 ## Ownership boundary
 
-Upstream workload systems own:
+Upstream workload systems such as AFW own:
 
 - domain-specific selection and policy;
 - compilation of domain intent into executable jobs;
@@ -21,7 +21,7 @@ WLO owns:
 
 - strict execution-plan validation;
 - worker selection and label checks;
-- zero-cost admission for v0.1;
+- zero-cost admission for local/fixed workers and guarded RPOF paid capacity;
 - optional Ollama model/digest readiness checks;
 - direct local command dispatch and single-attempt RPOF dispatch;
 - bounded pool concurrency;
@@ -32,7 +32,13 @@ WLO owns:
 - failure circuit breaking;
 - immutable plan/output identity;
 - stdout/stderr/metadata execution evidence; and
-- execution-only status reporting.
+- execution-only status reporting;
+- original paid-budget binding, capacity fulfillment and lifecycle control.
+
+RPOF owns RunPod fleet/resource mechanics, model/bootstrap readiness, tunnels,
+leases and cost safeguards, provider scaling/replacement and opaque dispatch.
+WLO's paid execution calls those provider primitives within its own guarded
+budget and lifecycle state.
 
 ## Execution boundary
 

@@ -11,8 +11,8 @@ failure policy, or model/digest requirements.
 | --- | --- |
 | Workload producer (e.g. AFW) | Logical pool IDs, exact requirements, opaque jobs, provenance |
 | WLO profile | Backend selection, worker bindings, capacity, budget declarations |
-| WLO runtime | Scheduling, state, resume identity; future fulfillment and budget lifecycle |
-| RPOF | Future provider mechanics and independent resource guardian |
+| WLO runtime | Scheduling, state, resume identity, guarded fulfillment and paid budget lifecycle |
+| RPOF | Provider mechanics, fleet readiness, dispatch and independent resource guardian |
 
 `wlo-execution-plan/v0.2` retains v0.1 top-level and job fields. Each pool contains
 `pool_id`, optional `required_labels`, and optional `requirements` (exact Ollama model/digest plus optional context and GPU
@@ -86,25 +86,21 @@ expansion. Its hourly ceiling covers the entire pool, not each worker.
 A profile containing any RPOF pool requires one shared `budget` with positive,
 finite numeric `max_hourly_rate_usd` and `max_total_cost_usd`, and a positive integer
 `max_runtime_seconds`. All amounts are USD. Each pool's hourly ceiling must fit
-the aggregate hourly ceiling; future admission must also enforce aggregate cost
-across all simultaneously retained capacity. These are upper-bound declarations,
-not a cost estimate, a guardian contract, or evidence of independent enforcement.
+the aggregate hourly ceiling; guarded admission also enforces aggregate cost
+across simultaneously retained capacity. These are upper-bound declarations,
+not a cost estimate or a substitute for the independent guardian contract.
 
-- #6 consumes the original logical requirements plus the profile's pool capacity
-  and shared budget declaration. It owns fulfillment and resolved worker handles.
-- #8 consumes those runtime handles and the unchanged opaque jobs, and records
-  them in WLO's existing job/attempt/state model.
-- #5 must define and prove independent cumulative-spend/runtime enforcement,
-  heartbeat, teardown reserve, and budget/plan binding before any paid mutation.
-- #9/#10 must inherit the same original budget/deadline through scaling, resume,
-  pause, and shutdown. Re-reading the profile cannot reset a paid lease.
+WLO binds the original logical requirements, profile capacity and paid budget,
+fulfills through RPOF and retains resolved worker handles. It records attempts
+and status itself. Scaling, pause, resume and shutdown remain within the same
+original budget and runtime deadline; re-reading the profile never resets a
+paid lease. RPOF's independent guardian and deletion verification remain active.
 
-`validate` accepts this declared shape; `plan` prints it and explicitly reports
-**BLOCKED**. Neither invokes RPOF nor claims readiness. `run` and `resume` reject
-RPOF profiles before loading workers or creating execution output, including
-mixed profiles. `worker-check` supports an explicit existing-fleet `target` and
-`--rpof-executable FILE`; see [RPOF readiness](rpof-readiness.md). Readiness does
-not lift the execution gate or provision resources.
+`validate` checks the declared shape without acquiring resources. `plan`
+inspects the binding without authorizing spend. `worker-check` can inspect an
+explicit existing-fleet `target`; see [RPOF readiness](rpof-readiness.md).
+Automatic RPOF execution requires `--rpof-executable`, `--paid-budget` and
+`--authorize-paid-rpof`, with no arbitrary existing-fleet adoption.
 
 ## Resume and compatibility
 
@@ -119,7 +115,8 @@ acknowledging a breaker. A changed placement is a new execution with a new outpu
 Existing v0.1 plans still require their original inline worker bindings and run
 without a profile. Their stored state need not be migrated. Profiles cannot be
 applied to v0.1 plans; frozen historical plans must not be rewritten to attach one.
-Keep active Batch 039 on its original plan, workdir, and no-profile resume command.
+Any preexisting v0.1 execution must retain its original plan, workdir and
+no-profile resume command.
 
 Examples under `examples/profiles/` share `examples/logical-plan.json` and can be
 checked with `validate`; local/fixed examples reference configured worker names.
