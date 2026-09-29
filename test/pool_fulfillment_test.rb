@@ -43,7 +43,7 @@ class ExecutionPoolPlanTest < Minitest::Test
     assert_equal "alpha:exact", request.dig("requirements", "ollama_model")
     assert_equal "a" * 64, request.dig("requirements", "expected_digest")
     assert_equal 262_144, request.dig("requirements", "required_context_length")
-    assert_equal({ "desired_workers" => 2, "minimum_workers" => 2,
+    assert_equal({ "desired_workers" => 2, "minimum_workers" => 1,
                    "max_pool_hourly_usd" => 1.0, "max_total_hourly_usd" => 2.0 }, request["capacity"])
     assert_equal plan.budget.document, request["budget"]
     assert request.frozen?
@@ -167,6 +167,7 @@ class PoolProviderFixture < WorkloadOrchestrator::RpofCapacityClient
     ready = %w[ready partial_ready].include?(status)
     indices = ready ? (1..final).to_a : []
     handle = "ep-#{request.fetch('pool_id')}-#{request.fetch('plan_sha256')[0, 10]}"
+    observed_initial = dry ? @initial_workers : @snapshot["owned_resources"].values.count { |row| row["fleet_key"] == handle }
     unless dry
       indices.each do |index|
         @snapshot["owned_resources"]["#{handle}-#{index}"] = {
@@ -184,7 +185,7 @@ class PoolProviderFixture < WorkloadOrchestrator::RpofCapacityClient
       "contract_version" => WIRE_RESULT, "plan_sha256" => request["plan_sha256"], "pool_id" => request["pool_id"],
       "requirements" => request["requirements"], "execution_handle" => handle, "ready" => ready,
       "status" => status, "worker_indices" => indices, "capabilities" => ready ? {} : nil,
-      "capacity" => request.fetch("capacity").merge("initial_workers" => @initial_workers, "final_workers" => final)
+      "capacity" => request.fetch("capacity").merge("initial_workers" => observed_initial, "final_workers" => final)
     }
     result.merge!(@override) if @override && !dry
     path = arguments[arguments.index("--output") + 1]
@@ -237,9 +238,9 @@ class PoolFulfillmentTest < Minitest::Test
       assert_equal ["alpha", "beta"], handoffs.keys
       handoffs.each_value do |handoff|
         assert_equal @plan.budget.identity, handoff["budget"]
-        assert_equal [1, 2], handoff.dig("target", "worker_indices")
+        assert_equal [1], handoff.dig("target", "worker_indices")
         assert_match(/\Afleet-ep-/, handoff.dig("target", "expected_fleet_id"))
-        assert_in_delta 0.2, handoff["hourly_rate_usd"]
+        assert_in_delta 0.1, handoff["hourly_rate_usd"]
       end
       assert_equal "ARMED", lifecycle.check!["state"]
       :consumed
@@ -282,11 +283,11 @@ class PoolFulfillmentTest < Minitest::Test
     profile = profile_document
     profile["pools"].each { |row| row["max_concurrency"] = 1 }
     @plan = pool_plan(profile: profile)
-    @provider.paid_status = "partial_ready"
+    @provider.paid_status = "ready"
     @provider.final_workers = 1
     run_capacity do |handoffs, _|
       assert_equal [1], handoffs["alpha"].dig("target", "worker_indices")
-      assert_equal "partial_ready", handoffs["alpha"]["status"]
+      assert_equal "ready", handoffs["alpha"]["status"]
     end
   end
 
@@ -323,7 +324,7 @@ class PoolFulfillmentTest < Minitest::Test
   def test_unknown_create_outcome_keeps_evidence_and_requests_teardown
     @provider.fail_after_create = true
     assert_raises(WorkloadOrchestrator::Error) { run_capacity { flunk } }
-    assert_equal 2, @provider.snapshot["owned_resources"].length
+    assert_equal 1, @provider.snapshot["owned_resources"].length
     assert_equal "TEARDOWN_REQUIRED", @provider.snapshot["state"]
     assert File.file?(File.join(@output, "intent.json"))
     assert File.file?(File.join(@output, "session.json"))
@@ -370,6 +371,54 @@ class PoolFulfillmentTest < Minitest::Test
     assert File.file?(File.join(@output, "sessions", "session-2.json"))
   end
 
+  def test_admits_exactly_one_worker_and_recovers_same_budget_capacity_and_measurements
+    session.with_capacity(authorize_paid: true) do |handoffs, lifecycle|
+      first = handoffs.fetch("alpha")
+      assert_equal [1], first.dig("target", "worker_indices")
+      admitted = session.admit_worker(pool_id: "alpha", handoff: first, lifecycle: lifecycle)
+      assert_equal [1, 2], admitted.dig("target", "worker_indices")
+      assert_equal 2, admitted.fetch("bootstrap_samples_seconds").length
+      assert_equal @plan.request("alpha").fetch("capacity"), admitted.fetch("capacity").slice(
+        "desired_workers", "minimum_workers", "max_pool_hourly_usd", "max_total_hourly_usd"
+      )
+      WorkloadOrchestrator::PoolFulfillment::Outcome.new(value: :paused, retain_capacity: true)
+    end
+    paid_before = @provider.calls.count { |args| args.include?("--yes") }
+    session.with_capacity(authorize_paid: true, resume: true) do |handoffs, _|
+      assert_equal [1, 2], handoffs.fetch("alpha").dig("target", "worker_indices")
+      assert_equal 2, handoffs.fetch("alpha").fetch("bootstrap_samples_seconds").length
+      :done
+    end
+    assert_equal paid_before, @provider.calls.count { |args| args.include?("--yes") }
+    assert_equal 1, @provider.calls.count { |args| args[0, 2] == ["budget", "arm"] }
+  end
+
+  def test_pending_reservation_blocks_admission_before_paid_mutation
+    session.with_capacity(authorize_paid: true) do |handoffs, lifecycle|
+      @provider.snapshot["reservations"]["other"] = { "status" => "pending" }
+      before = @provider.calls.count { |args| args.include?("--yes") }
+      assert_raises(WorkloadOrchestrator::Error) do
+        session.admit_worker(pool_id: "alpha", handoff: handoffs.fetch("alpha"), lifecycle: lifecycle)
+      end
+      assert_equal before, @provider.calls.count { |args| args.include?("--yes") }
+      assert_equal [1], JSON.parse(File.read(File.join(@output, "capacity.json"))).dig("alpha", "target", "worker_indices")
+      :done
+    end
+  end
+
+  def test_exhausted_cumulative_headroom_blocks_admission
+    session.with_capacity(authorize_paid: true) do |handoffs, lifecycle|
+      @provider.snapshot["remaining_uncommitted_budget_usd"] = 0.0
+      before = @provider.calls.count { |args| args.include?("--yes") }
+      error = assert_raises(WorkloadOrchestrator::Error) do
+        session.admit_worker(pool_id: "alpha", handoff: handoffs.fetch("alpha"), lifecycle: lifecycle)
+      end
+      assert_includes error.message, "budget headroom"
+      assert_equal before, @provider.calls.count { |args| args.include?("--yes") }
+      :done
+    end
+  end
+
   def test_resume_never_fulfills_when_original_capacity_evidence_is_missing
     error = assert_raises(WorkloadOrchestrator::Error) do
       session.with_capacity(authorize_paid: true, resume: true) { flunk }
@@ -380,10 +429,10 @@ class PoolFulfillmentTest < Minitest::Test
 
   def test_later_pool_failure_tears_down_the_same_parent_budget
     @provider.callback = lambda do |snapshot|
-      @provider.fail_after_create = true if snapshot["owned_resources"].length > 2
+      @provider.fail_after_create = true if snapshot["owned_resources"].length > 1
     end
     assert_raises(WorkloadOrchestrator::Error) { run_capacity { flunk } }
-    assert_equal 4, @provider.snapshot["owned_resources"].length
+    assert_equal 2, @provider.snapshot["owned_resources"].length
     assert_equal "TEARDOWN_REQUIRED", @provider.snapshot["state"]
     paid = @provider.calls.select { |args| args.include?("--yes") }
     assert_equal 2, paid.length

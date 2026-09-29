@@ -66,7 +66,7 @@ module WorkloadOrchestrator
     private
 
     def validate_capacity!(count)
-      minimum = [binding.fetch("min_workers"), binding.fetch("max_concurrency")].max
+      minimum = binding.fetch("min_workers")
       maximum = binding.fetch("desired_workers")
       return if count.between?(minimum, maximum)
 

@@ -13,19 +13,34 @@ module WorkloadOrchestrator
       invoke_pool(pool_plan, pool_id, output_dir, dry_run: true, timeout: @timeout_seconds)
     end
 
-    def fulfill_pool(pool_plan:, pool_id:, output_dir:, lifecycle:, authorize_paid: false)
+    def fulfill_pool(pool_plan:, pool_id:, output_dir:, lifecycle:, authorize_paid: false,
+                     target_workers: nil, expected_initial_workers: 0)
       raise Error, "paid fulfillment requires explicit authorize_paid: true" unless authorize_paid == true
       snapshot = lifecycle.check_for!(budget: pool_plan.budget, client: self)
       remaining = Time.iso8601(snapshot.fetch("deadline_at_utc")) - Time.now.utc
-      result = invoke_pool(pool_plan, pool_id, output_dir, dry_run: false, timeout: remaining)
+      result = invoke_pool(pool_plan, pool_id, output_dir, dry_run: false, timeout: remaining,
+                           target_workers: target_workers, expected_initial_workers: expected_initial_workers)
       lifecycle.check_for!(budget: pool_plan.budget, client: self)
       result
     end
 
     private
 
-    def invoke_pool(pool_plan, pool_id, output_dir, dry_run:, timeout:)
-      request = pool_plan.request(pool_id)
+    def invoke_pool(pool_plan, pool_id, output_dir, dry_run:, timeout:, target_workers: nil,
+                    expected_initial_workers: nil)
+      original = pool_plan.request(pool_id)
+      request = if target_workers
+                  unless target_workers.is_a?(Integer) &&
+                         target_workers.between?(original.dig("capacity", "minimum_workers"),
+                                                 original.dig("capacity", "desired_workers"))
+                    raise Error, "requested worker count exceeds frozen capacity bounds"
+                  end
+                  original.merge("capacity" => original.fetch("capacity").merge(
+                    "desired_workers" => target_workers, "minimum_workers" => target_workers
+                  ))
+                else
+                  original
+                end
       output = File.expand_path(output_dir)
       FileUtils.mkdir_p(File.dirname(output))
       Dir.mkdir(output)
@@ -45,6 +60,9 @@ module WorkloadOrchestrator
       end
       document = read_result(result_path, WIRE_RESULT)
       validate_pool_result!(document, request, pool_plan.execution_handle(request), dry_run, status.exitstatus)
+      if !dry_run && document.dig("capacity", "initial_workers") != expected_initial_workers
+        raise Error, "RPOF initial worker count changed during admission"
+      end
       Result.new(document: document.merge("contract_version" => RESULT_VERSION),
                  exit_status: status.exitstatus, stdout: stdout, stderr: stderr).freeze
     rescue Errno::EEXIST

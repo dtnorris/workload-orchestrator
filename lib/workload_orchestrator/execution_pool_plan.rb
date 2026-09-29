@@ -88,7 +88,7 @@ module WorkloadOrchestrator
           "required_context_length" => context, "require_fully_gpu_resident" => true
         },
         "capacity" => {
-          "desired_workers" => row.fetch("desired_workers"), "minimum_workers" => [row.fetch("min_workers"), row.fetch("max_concurrency")].max,
+          "desired_workers" => row.fetch("desired_workers"), "minimum_workers" => row.fetch("min_workers"),
           "max_pool_hourly_usd" => row.fetch("max_hourly_rate_usd"),
           "max_total_hourly_usd" => budget.document.fetch("max_hourly_rate_usd")
         }

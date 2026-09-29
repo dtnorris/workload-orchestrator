@@ -51,6 +51,55 @@ module WorkloadOrchestrator
       end
     end
 
+    # Called only from the active capacity scope. The provider reuses the same
+    # budget and fleet handle; the frozen plan is never replaced or re-armed.
+    def admit_worker(pool_id:, handoff:, lifecycle:)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      request = @plan.request(pool_id)
+      original = JSON.parse(File.read(File.join(@output, "capacity.json"))).fetch(pool_id)
+      raise Error, "capacity changed before admission" unless original == handoff
+      snapshot = lifecycle.check_for!(budget: @plan.budget, client: @client)
+      verify_handoff!(pool_id, handoff, { "deadline_at_utc" => snapshot.fetch("deadline_at_utc") })
+      current = handoff.dig("capacity", "final_workers")
+      desired = request.dig("capacity", "desired_workers")
+      raise Error, "desired capacity already reached" if current >= desired
+      raise Error, "current capacity ownership changed" unless
+        verify_ownership!(request, handoff.fetch("target"), snapshot) == handoff.fetch("hourly_rate_usd")
+      # Include every active pool and pending reservation, even when the
+      # provider ledger contains resources outside this execution's pool.
+      assert_hourly_headroom!(request, handoff, snapshot)
+      result = @client.fulfill_pool(
+        pool_plan: @plan, pool_id: pool_id, lifecycle: lifecycle, authorize_paid: true,
+        target_workers: current + 1, expected_initial_workers: current,
+        output_dir: pool_output(pool_id, "admission-#{current + 1}")
+      )
+      unless result.document["ready"] == true && result.document.dig("capacity", "final_workers") == current + 1
+        raise Error, "RPOF did not prepare exactly one ready worker"
+      end
+      target = verify_readiness!(pool_id, request, result.document)
+      unless target.fetch("fleet_key") == handoff.dig("target", "fleet_key") &&
+             target.fetch("expected_fleet_id") == handoff.dig("target", "expected_fleet_id") &&
+             target.fetch("worker_indices") == (1..current + 1).to_a
+        raise Error, "admitted worker changed the original fleet identity or worker prefix"
+      end
+      snapshot = lifecycle.check_for!(budget: @plan.budget, client: @client)
+      rate = verify_ownership!(request, target, snapshot)
+      sample = [Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, 0.001].max
+      updated = handoff.merge("target" => target, "hourly_rate_usd" => rate,
+                              "bootstrap_samples_seconds" => handoff.fetch("bootstrap_samples_seconds") + [sample],
+                              "status" => result.document.fetch("status"),
+                              "capacity" => request.fetch("capacity").merge(
+                                "initial_workers" => 0, "final_workers" => current + 1
+                              ))
+      all = JSON.parse(File.read(File.join(@output, "capacity.json")))
+      raise Error, "capacity changed during admission" unless all.fetch(pool_id) == original
+      all[pool_id] = updated
+      write_json("capacity.json", all)
+      updated
+    rescue JSON::ParserError, KeyError, SystemCallError => e
+      raise Error, "admission evidence invalid: #{e.message}"
+    end
+
     private
 
     def prepare_output!(resume)
@@ -124,6 +173,11 @@ module WorkloadOrchestrator
              rate <= request_capacity.fetch("max_pool_hourly_usd")
         raise Error, "persisted capacity hourly rate is invalid"
       end
+      samples = handoff["bootstrap_samples_seconds"]
+      unless samples.is_a?(Array) && samples.length == final - minimum + 1 &&
+             samples.all? { |value| value.is_a?(Numeric) && value.finite? && value.positive? }
+        raise Error, "persisted bootstrap measurements are invalid"
+      end
     end
 
     def preflight!
@@ -138,20 +192,26 @@ module WorkloadOrchestrator
 
     def fulfill_one(pool_id, lifecycle, bounds)
       request = @plan.request(pool_id)
+      starter = request.dig("capacity", "minimum_workers")
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       result = @client.fulfill_pool(pool_plan: @plan, pool_id: pool_id, lifecycle: lifecycle,
-                                    output_dir: pool_output(pool_id, "fulfillment"), authorize_paid: true)
+                                    output_dir: pool_output(pool_id, "fulfillment"), authorize_paid: true,
+                                    target_workers: starter, expected_initial_workers: 0)
       unless result.document["ready"] == true && result.document.dig("capacity", "initial_workers") == 0
         raise Error, "pool #{pool_id} did not produce fresh ready capacity"
       end
       target = verify_readiness!(pool_id, request, result.document)
       snapshot = lifecycle.check_for!(budget: @plan.budget, client: @client)
       hourly_rate = verify_ownership!(request, target, snapshot)
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
       {
         "contract_version" => VERSION, "pool_id" => pool_id,
         "plan_sha256" => @plan.plan_sha256, "profile_sha256" => @plan.profile_sha256,
         "budget" => @plan.budget.identity, "deadline_at_utc" => bounds.fetch("deadline_at_utc"),
         "target" => target, "hourly_rate_usd" => hourly_rate,
-        "status" => result.document.fetch("status"), "capacity" => result.document.fetch("capacity"),
+        "status" => result.document.fetch("status"),
+        "bootstrap_samples_seconds" => [[elapsed / starter, 0.001].max],
+        "capacity" => request.fetch("capacity").merge("initial_workers" => 0, "final_workers" => starter),
         "requirements" => request.fetch("requirements")
       }
     end
@@ -189,9 +249,36 @@ module WorkloadOrchestrator
       unless rate.finite? && rate <= request.dig("capacity", "max_pool_hourly_usd")
         raise Error, "fulfilled pool exceeds its hourly ceiling"
       end
+      total = snapshot.fetch("owned_resources").values.select { |row| row["status"] == "active" }
+                      .sum { |row| Float(row.fetch("hourly_rate_usd")) }
+      unless total.finite? && total <= request.dig("capacity", "max_total_hourly_usd")
+        raise Error, "aggregate owned worker rate exceeds original hourly ceiling"
+      end
       rate
     rescue KeyError, NoMethodError => e
       raise Error, "invalid budget resource ownership evidence: #{e.message}"
+    end
+
+    def assert_hourly_headroom!(request, handoff, snapshot)
+      resources = snapshot.fetch("owned_resources").values.select { |row| row["status"] == "active" }
+      pending = snapshot.fetch("reservations").values.select { |row| row["status"] == "pending" }
+      raise Error, "pending paid reservations block new admission" unless pending.empty?
+      current_pool = resources.select { |row| row["fleet_key"] == handoff.dig("target", "fleet_key") }
+      pool_rate = current_pool.sum { |row| Float(row.fetch("hourly_rate_usd")) }
+      total_rate = resources.sum { |row| Float(row.fetch("hourly_rate_usd")) }
+      raise Error, "invalid paid resource rates" unless pool_rate.finite? && total_rate.finite? &&
+                                                        resources.all? { |row| Float(row.fetch("hourly_rate_usd")).positive? }
+      candidate = request.dig("capacity", "max_pool_hourly_usd") /
+                  request.dig("capacity", "desired_workers").to_f
+      # RPOF repeats these checks against the live price and reserves maximum
+      # liability atomically before creating the worker.
+      if pool_rate + candidate > request.dig("capacity", "max_pool_hourly_usd") ||
+         total_rate + candidate > request.dig("capacity", "max_total_hourly_usd") ||
+         snapshot.fetch("remaining_uncommitted_budget_usd") <= 0
+        raise Error, "admission exceeds original pool, aggregate, or cumulative budget headroom"
+      end
+    rescue ArgumentError, TypeError, KeyError => e
+      raise Error, "invalid rate or reservation evidence: #{e.message}"
     end
 
     def pool_output(pool_id, phase)

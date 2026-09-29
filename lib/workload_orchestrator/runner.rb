@@ -4,6 +4,7 @@ require "open3"
 require "time"
 require_relative "pool_fulfillment"
 require_relative "rpof_contract"
+require_relative "worker_admission_policy"
 
 module WorkloadOrchestrator
   class Runner
@@ -12,7 +13,7 @@ module WorkloadOrchestrator
     RemoteWorker = Struct.new(:name, :index, keyword_init: true)
 
     def initialize(plan:, workers:, workdir:, output_dir:, worker_check: WorkerCheck.new, out: $stdout,
-                   rpof_client: nil, capacity_session: nil)
+                   rpof_client: nil, capacity_session: nil, admission_policy: WorkerAdmissionPolicy.new)
       @plan = plan
       @workers = workers
       @workdir = File.expand_path(workdir)
@@ -24,6 +25,7 @@ module WorkloadOrchestrator
       @out = out
       @rpof_client = rpof_client
       @capacity_session = capacity_session
+      @admission_policy = admission_policy
       @remote_halt_mutex = Mutex.new
       @remote_halted = false
       @job_positions = plan.jobs.each_with_index.to_h { |job, index| [job.id, index + 1] }.freeze
@@ -130,7 +132,79 @@ module WorkloadOrchestrator
 
       queue = Queue.new
       pending.each { |job| queue << job }
-      selected_workers(pool).map { |worker| worker_thread(worker, queue) }.each(&:value)
+      threads = selected_workers(pool).map { |worker| worker_thread(worker, queue) }
+      if rpof_pool?(pool)
+        coordinate_admissions(pool, jobs, queue, threads)
+      else
+        threads.each(&:value)
+      end
+    end
+
+    def coordinate_admissions(pool, jobs, queue, threads)
+      handoff = @remote_handoffs.fetch(pool.id)
+      samples = handoff.fetch("bootstrap_samples_seconds", [])
+      observed = 0
+      until threads.all? { |thread| !thread.alive? }
+        break if stop_dispatch?
+
+        completions = jobs.filter_map do |job|
+          next unless job.pool_id == pool.id
+          metadata = store.metadata_for(job)
+          metadata["elapsed_seconds"] if metadata && metadata["status"] == "complete" &&
+                                         metadata["elapsed_seconds"].to_f.positive?
+        end
+        if completions.length > observed && queue.size.positive?
+          observed = completions.length
+          deadline = Time.iso8601(handoff.fetch("deadline_at_utc")) - Time.now.utc
+          decision = @admission_policy.evaluate(
+            unclaimed: queue.size, workers: threads.length,
+            ceiling: [pool.max_concurrency, plan.execution_profile.binding_for(pool.id).fetch("desired_workers")].min,
+            job_seconds: completions.sum / completions.length.to_f,
+            bootstrap_seconds: samples.empty? ? nil : samples.sum / samples.length,
+            deadline_seconds: deadline
+          )
+          record_admission_decision(pool.id, decision)
+          if decision.fetch("expand") && !stop_dispatch?
+            begin
+              @budget_lifecycle.check!
+              admitted = @capacity_session.admit_worker(
+                pool_id: pool.id, handoff: handoff, lifecycle: @budget_lifecycle
+              )
+              handoff = admitted
+              @remote_handoffs[pool.id] = admitted
+              samples = admitted.fetch("bootstrap_samples_seconds")
+              worker_index = admitted.dig("target", "worker_indices").last
+              record_admission_decision(pool.id, { "expand" => true, "reason" => "admitted",
+                                                    "worker_index" => worker_index })
+              unless stop_dispatch?
+                threads << worker_thread(RemoteWorker.new(name: "rpof:#{pool.id}:burst_#{worker_index}",
+                                                          index: worker_index).freeze, queue)
+              end
+            rescue StandardError => e
+              record_admission_decision(pool.id, { "expand" => false, "reason" => "admission_failed",
+                                                    "error" => e.message })
+              halt_remote_dispatch!(nil, "capacity_admission", e.message)
+            end
+          end
+        end
+        sleep(0.1) if threads.any?(&:alive?)
+      end
+      record_admission_decision(pool.id, { "expand" => false, "reason" => "no_unclaimed_work" }) if
+        !stop_dispatch? && queue.empty?
+    ensure
+      threads.each(&:value)
+    end
+
+    def record_admission_decision(pool_id, decision)
+      path = File.join(store.output_dir, "worker-admissions.jsonl")
+      row = { "at_utc" => Time.now.utc.iso8601, "pool_id" => pool_id,
+              "plan_sha256" => plan.sha256, "profile_sha256" => plan.execution_profile.sha256,
+              "decision" => decision }
+      File.open(path, "a", 0o600) do |file|
+        file.write(JSON.generate(row) + "\n")
+        file.flush
+        file.fsync
+      end
     end
 
     def selected_workers(pool)

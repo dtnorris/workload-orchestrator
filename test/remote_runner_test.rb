@@ -18,6 +18,7 @@ class RemoteRunnerTest < Minitest::Test
 
   class FakeCapacitySession
     attr_reader :calls, :outcomes, :lifecycle
+    attr_accessor :admission_error
 
     def initialize(handoff)
       @handoff = handoff
@@ -31,6 +32,18 @@ class RemoteRunnerTest < Minitest::Test
       outcome = yield({ "remote-pool" => @handoff }, @lifecycle)
       @outcomes << outcome
       outcome.value
+    end
+
+    def admit_worker(pool_id:, handoff:, lifecycle:)
+      raise @admission_error if @admission_error
+      handoff.merge("target" => handoff.fetch("target").merge("worker_indices" => [1, 2]),
+                    "bootstrap_samples_seconds" => [0.001, 0.001])
+    end
+  end
+
+  class AlwaysUseful
+    def evaluate(**inputs)
+      { "expand" => inputs.fetch(:unclaimed).positive?, "reason" => "fixture_useful" }
     end
   end
 
@@ -176,9 +189,47 @@ class RemoteRunnerTest < Minitest::Test
     assert_equal "remote_in_doubt", metadata("first").dig("evidence", "kind")
   end
 
+  def test_admitted_worker_receives_unclaimed_jobs_and_decisions_are_durable
+    @plan = remote_plan(%w[first second third fourth], desired: 2)
+    client = FakeClient.new
+    client.started = Queue.new
+    client.release = Queue.new
+    session = FakeCapacitySession.new(@handoff)
+    task = Thread.new { runner(client, session, admission_policy: AlwaysUseful.new).run }
+    assert_equal "first", client.started.pop
+    client.release << true
+    assert_equal "second", client.started.pop
+    third = client.started.pop
+    assert_includes %w[third fourth], third
+    4.times { client.release << true }
+    assert_equal "completed", task.value
+    assert_includes client.requests.map { |row| row.dig("target", "worker_indices") }, [2]
+    decisions = File.readlines(File.join(@output, "worker-admissions.jsonl")).map { |line| JSON.parse(line) }
+    assert decisions.any? { |row| row.dig("decision", "reason") == "admitted" }
+  end
+
+  def test_failed_admission_halts_dispatch_without_changing_job_outcomes
+    @plan = remote_plan(%w[first second third fourth], desired: 2)
+    client = FakeClient.new
+    client.started = Queue.new
+    client.release = Queue.new
+    session = FakeCapacitySession.new(@handoff)
+    session.admission_error = WorkloadOrchestrator::Error.new("capacity fixture failed")
+    task = Thread.new { runner(client, session, admission_policy: AlwaysUseful.new).run }
+    assert_equal "first", client.started.pop
+    client.release << true
+    assert_equal "second", client.started.pop
+    sleep 0.25
+    client.release << true
+    assert_equal "infrastructure_failed", task.value
+    assert_equal "complete", metadata("first").fetch("status")
+    assert_equal "capacity_admission", store.dispatch_halt.fetch("kind")
+    assert_equal [1], client.requests.map { |row| row.dig("target", "worker_indices") }.flatten.uniq
+  end
+
   private
 
-  def remote_plan(ids)
+  def remote_plan(ids, desired: 1)
     plan = {
       "contract_version" => WorkloadOrchestrator::Plan::LOGICAL_CONTRACT_VERSION,
       "plan_id" => "remote-fixture",
@@ -195,7 +246,7 @@ class RemoteRunnerTest < Minitest::Test
       "contract_version" => WorkloadOrchestrator::ExecutionProfile::CONTRACT_VERSION,
       "pools" => [{
         "pool_id" => "remote-pool", "backend" => "rpof", "max_concurrency" => 1,
-        "min_workers" => 1, "desired_workers" => 1, "max_hourly_rate_usd" => 1.0
+        "min_workers" => 1, "desired_workers" => desired, "max_hourly_rate_usd" => 1.0
       }],
       "budget" => { "max_hourly_rate_usd" => 1.0, "max_total_cost_usd" => 2.0, "max_runtime_seconds" => 120 }
     }
@@ -205,10 +256,10 @@ class RemoteRunnerTest < Minitest::Test
     )
   end
 
-  def runner(client, session)
+  def runner(client, session, admission_policy: WorkloadOrchestrator::WorkerAdmissionPolicy.new)
     WorkloadOrchestrator::Runner.new(
       plan: @plan, workers: @workers, workdir: @workdir, output_dir: @output,
-      out: StringIO.new, rpof_client: client, capacity_session: session
+      out: StringIO.new, rpof_client: client, capacity_session: session, admission_policy: admission_policy
     )
   end
 
