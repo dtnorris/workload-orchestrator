@@ -56,13 +56,16 @@ class DynamicSchedulingRunnerTest < Minitest::Test
     completed = 0
     claims_seen = {}
     claim_states_seen = {}
-    executor = lambda do |_environment, *argv, chdir:|
+    environments_seen = {}
+    parent_environment = ENV.to_h
+    executor = lambda do |environment, *argv, chdir:|
       raise "unexpected workdir" unless chdir == @workdir
 
       job_id = argv.last
       metadata = metadata_for(job_id)
       claim_path = File.join(@output, "claims", "#{Digest::SHA256.hexdigest(job_id)}.lock")
       mutex.synchronize do
+        environments_seen[job_id] = environment.dup
         claims_seen[job_id] = metadata.fetch("worker_execution_identity")
         claim_states_seen[job_id] = JSON.parse(File.read(claim_path)).fetch("state")
         active += 1
@@ -90,6 +93,47 @@ class DynamicSchedulingRunnerTest < Minitest::Test
     assert_equal 6, job_rows.length
     assert(job_rows.all? { |row| row.fetch("worker_execution_identity").length == 5 })
     assert_assignments_match_pools(plan, records)
+    assert_equal parent_environment, ENV.to_h
+    claims_seen.each do |job_id, identity|
+      assert_equal({ "AF_OLLAMA_BASE_URL" => identity.fetch("endpoint") }, environments_seen.fetch(job_id))
+      assert_includes metadata_for(job_id).fetch("environment_keys"), "AF_OLLAMA_BASE_URL"
+      assert_empty plan.jobs.find { |entry| entry.id == job_id }.env
+    end
+    assert_equal 6, environments_seen.values.map { |env| env.fetch("AF_OLLAMA_BASE_URL") }.uniq.length
+  end
+
+  def test_selected_endpoint_overrides_job_env_after_binding_is_durable
+    row = job("selected", "model")
+    supplied = { "AF_OLLAMA_BASE_URL" => "http://wrong.invalid:11434",
+                 "KEEP" => "value", "REMOVE" => nil }
+    row["env"] = supplied
+    row["argv"] = [RbConfig.ruby, "-e", "puts ENV.fetch('AF_OLLAMA_BASE_URL')"]
+    plan = build_plan(pools: [pool("model")], jobs: [row])
+    worker_a = worker_record("worker-a", "model")
+    worker_b = worker_record("worker-b", "model")
+    source = SequenceSource.new(snapshot(revision: 1, workers: [worker_b, worker_a]))
+    observed = nil
+    executor = lambda do |environment, *argv, chdir:|
+      # Read disk from the launch callback, before even starting the subprocess.
+      observed = [environment.dup, metadata_for("selected")]
+      Open3.capture3(environment, *argv, chdir: chdir)
+    end
+    runner = build_runner(plan, source, executor: executor, sleeper: nil)
+
+    assert_equal "completed", runner.run
+    environment, metadata = observed
+    assert_equal "running", metadata.fetch("status")
+    assert_equal 1, metadata.fetch("attempt")
+    assert_equal "worker-a", metadata.fetch("worker")
+    identity = metadata.fetch("worker_execution_identity")
+    assert_equal "dynamic-runner-registry", identity.fetch("registry_id")
+    assert_equal worker_a.fetch("generation_id"), identity.fetch("generation_id")
+    assert_equal worker_a.fetch("capability_fingerprint"), identity.fetch("capability_fingerprint")
+    assert_equal worker_a.fetch("endpoint"), identity.fetch("endpoint")
+    assert_equal supplied.merge("AF_OLLAMA_BASE_URL" => identity.fetch("endpoint")), environment
+    assert_equal environment.keys.sort, metadata.fetch("environment_keys")
+    assert_equal supplied, plan.jobs.first.env
+    assert_equal "#{worker_a.fetch('endpoint')}\n", File.read(File.join(@output, "runs/selected/stdout.log"))
   end
 
   def test_zero_worker_startup_assigns_when_worker_appears_later
@@ -508,6 +552,57 @@ class DynamicSchedulingRunnerTest < Minitest::Test
     assert_equal "worker_disappeared", metadata.dig("evidence", "reason")
     assert_equal "complete", metadata.dig("late_evidence", 0, "status")
     assert_nil runner.store.metadata_for(plan.jobs.last)
+  end
+
+  def test_replacement_does_not_substitute_endpoint_for_bound_attempt
+    plan = build_plan(
+      pools: [pool("model")],
+      jobs: [job("first", "model"), job("second", "model")]
+    )
+    worker = worker_record("worker", "model")
+    replacement = worker_record("worker", "model", generation_id: "generation-2")
+    replacement["endpoint"] = "http://127.0.0.1:11499"
+    source = SequenceSource.new(
+      snapshot(revision: 1, workers: [worker]),
+      snapshot(revision: 2, published_at: "2030-01-01T00:00:20Z", workers: [replacement])
+    )
+    mutex = Mutex.new
+    condition = ConditionVariable.new
+    started = false
+    calls = []
+    environments = []
+    runner = nil
+    executor = lambda do |environment, *argv, **_options|
+      mutex.synchronize do
+        calls << argv.last
+        environments << environment.dup
+        started = true
+        condition.broadcast
+      end
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+      until runner.store.dispatch_halted?
+        raise "timed out waiting for worker-loss halt" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+        Thread.pass
+      end
+      command_result
+    end
+    sleeper = lambda do |*_args|
+      mutex.synchronize { wait_for(condition, mutex) { started } }
+    end
+    runner = build_runner(plan, source, executor: executor, sleeper: sleeper)
+
+    assert_equal "infrastructure_failed", runner.run
+    assert_equal ["first"], calls
+    metadata = runner.store.metadata_for(plan.jobs.first)
+    assert_equal "failed", metadata.fetch("status")
+    assert_equal "worker_generation_replaced", metadata.dig("evidence", "reason")
+    assert_equal "complete", metadata.dig("late_evidence", 0, "status")
+    assert_nil runner.store.metadata_for(plan.jobs.last)
+    assert_equal [worker.fetch("endpoint")], environments.map { |env| env.fetch("AF_OLLAMA_BASE_URL") }
+    assert_equal worker.fetch("generation_id"), metadata.dig("worker_execution_identity", "generation_id")
+    assert_equal worker.fetch("endpoint"), metadata.dig("worker_execution_identity", "endpoint")
+    refute_equal replacement.fetch("endpoint"), environments.first.fetch("AF_OLLAMA_BASE_URL")
   end
 
   def test_resume_preserves_running_binding_without_redispatch

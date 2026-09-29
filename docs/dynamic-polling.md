@@ -44,6 +44,28 @@ remain injectable for deterministic tests. While idle, the default wait checks
 control and interruption state at least every 100 milliseconds, preventing a
 busy loop while still stopping promptly.
 
+## Local command endpoint binding
+
+Dynamic v0.3 commands run locally through WLO's command executor. After the
+selected worker's running attempt and exact identity are durably recorded,
+the launcher copies the job environment and sets `AF_OLLAMA_BASE_URL` from
+that attempt's immutable `worker_execution_identity.endpoint`. This is the
+existing AFW/AFSU Ollama client convention; it overrides the runtime config.
+The selected endpoint overrides any job value, including an explicit unset.
+Other job values and explicit unsets remain intact. The injected key is included
+in the attempt's `environment_keys` evidence.
+
+Each subprocess receives its own environment map. WLO never changes global
+`ENV`, reselects a worker at launch, or asks RPOF to dispatch the command. A
+replacement generation cannot change the original attempt's endpoint; DW-14
+still owns in-doubt reconciliation and explicit retry. Static v0.1/v0.2
+environment merging remains unchanged.
+
+AFW's generated scorer case environment leaves `AF_OLLAMA_BASE_URL` unset,
+allowing the local scorer child to inherit the WLO binding. Commands/adapters
+must honor this environment convention; WLO cannot enforce routing inside an
+arbitrary command that deliberately overrides it.
+
 ## Stop and resume rules
 
 The loop continues while pending or running work exists and none of these stop

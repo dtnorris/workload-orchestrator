@@ -110,6 +110,21 @@ class RunnerTest < Minitest::Test
     assert_includes out.string, "[3/3] [local] job-3"
   end
 
+  def test_static_job_endpoint_and_unrelated_environment_are_unchanged
+    supplied = { "AF_OLLAMA_BASE_URL" => "http://static.invalid:11434",
+                 "KEEP" => "static", "REMOVE" => nil }
+    plan = load_plan([job("static", code: "puts :ok", env: supplied)])
+    observed = nil
+    executor = lambda do |environment, *_argv, **_options|
+      observed = environment.dup
+      command_result
+    end
+
+    assert_equal "completed", build_runner(plan, command_executor: executor).run
+    assert_equal supplied, observed
+    assert_equal supplied, plan.jobs.first.env
+  end
+
   def test_environment_can_explicitly_remove_inherited_value
     code = 'puts ENV.key?("WLO_TEST_SECRET") ? ENV.fetch("WLO_TEST_SECRET") : "unset"'
     plan = load_plan([job("job-1", code: code, env: { "WLO_TEST_SECRET" => nil })])

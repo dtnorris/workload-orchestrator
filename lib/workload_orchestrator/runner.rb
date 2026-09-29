@@ -143,7 +143,8 @@ module WorkloadOrchestrator
           break if stop_dispatch?
 
           attempt = store.record_dynamic_running!(
-            job: assignment.job, worker: assignment.worker, environment_keys: assignment.job.env.keys
+            job: assignment.job, worker: assignment.worker,
+            environment_keys: assignment.job.env.keys | ["AF_OLLAMA_BASE_URL"]
           )
           launch_dynamic_assignment(assignment, attempt)
         end
@@ -162,7 +163,11 @@ module WorkloadOrchestrator
     end
 
     def execute_dynamic_command(job, attempt)
-      stdout, stderr, status = @command_executor.call(job.env, *job.argv, chdir: workdir)
+      # Consume the identity persisted before launch, never a fresh registry view.
+      environment = job.env.merge(
+        "AF_OLLAMA_BASE_URL" => attempt.worker_binding.execution_identity.fetch("endpoint")
+      )
+      stdout, stderr, status = @command_executor.call(environment, *job.argv, chdir: workdir)
       record_dynamic_result(job, attempt, stdout, stderr, status)
     rescue StandardError => e
       @dynamic_schedule_mutex.synchronize do
