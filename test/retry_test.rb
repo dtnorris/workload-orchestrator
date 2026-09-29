@@ -12,11 +12,17 @@ class RetryTest < Minitest::Test
     FileUtils.mkdir_p(@workdir)
     @workers_path = write_workers(@tmp)
     @workers = WorkloadOrchestrator::WorkerSet.load(@workers_path)
-    fail_until_repaired = 'puts "stdout"; warn "stderr"; exit(File.exist?("repaired") ? 0 : 7)'
+    @executed = []
+    @command_executor = lambda do |_environment, *argv, chdir:|
+      id = argv.last
+      @executed << id
+      failing = id.start_with?("bad-") && !File.exist?(File.join(chdir, "repaired"))
+      command_result(exit_status: failing ? 7 : 0,
+                     stdout: failing ? "stdout\n" : "", stderr: failing ? "stderr\n" : "")
+    end
     @plan_path = write_plan(@tmp, jobs: [
-                              job("done", code: 'File.open("done-count", "a") { |f| f.puts "ran" }'),
-                              job("bad-1", code: fail_until_repaired), job("bad-2", code: fail_until_repaired),
-                              job("later", code: "puts :later")
+                              fixture_job("done"), fixture_job("bad-1"), fixture_job("bad-2"),
+                              fixture_job("later")
                             ])
     @plan = WorkloadOrchestrator::Plan.load(@plan_path)
   end
@@ -49,7 +55,7 @@ class RetryTest < Minitest::Test
     assert_equal 2, store.metadata_for(@plan.jobs[1]).fetch("attempt")
     assert_equal "complete", store.metadata_for(@plan.jobs[1]).fetch("status")
     assert_equal old, evidence("bad-1", archive: 1)
-    assert_equal ["ran"], File.readlines(File.join(@workdir, "done-count"), chomp: true)
+    assert_equal ["done"], @executed.select { |id| id == "done" }
     assert_equal "completed", runner.run(resume: true)
     assert_equal 2, store.metadata_for(@plan.jobs[1]).fetch("attempt")
     assert_equal @plan.bytes, File.binread(File.join(@output, "plan.json"))
@@ -98,7 +104,9 @@ class RetryTest < Minitest::Test
     other_workdir = File.join(@tmp, "other")
     FileUtils.mkdir_p(other_workdir)
     assert_equal 1, retry_cli("--all", "--workdir", other_workdir, "--acknowledge-circuit-breaker").first
-    File.write(@plan_path, File.read(@plan_path).sub("puts :later", "puts :changed"))
+    changed = JSON.parse(File.read(@plan_path))
+    changed.fetch("jobs").last.fetch("argv")[-1] = "changed"
+    File.write(@plan_path, JSON.pretty_generate(changed))
     assert_equal 1, retry_cli("--all", "--acknowledge-circuit-breaker").first
     refute File.exist?(File.join(@output, "attempts"))
   end
@@ -175,7 +183,8 @@ class RetryTest < Minitest::Test
 
   def runner
     WorkloadOrchestrator::Runner.new(
-      plan: @plan, workers: @workers, workdir: @workdir, output_dir: @output, out: StringIO.new
+      plan: @plan, workers: @workers, workdir: @workdir, output_dir: @output, out: StringIO.new,
+      command_executor: @command_executor
     )
   end
 

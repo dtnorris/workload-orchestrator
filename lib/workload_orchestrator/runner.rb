@@ -13,7 +13,8 @@ module WorkloadOrchestrator
     RemoteWorker = Struct.new(:name, :index, keyword_init: true)
 
     def initialize(plan:, workers:, workdir:, output_dir:, worker_check: WorkerCheck.new, out: $stdout,
-                   rpof_client: nil, capacity_session: nil, admission_policy: WorkerAdmissionPolicy.new)
+                   rpof_client: nil, capacity_session: nil, admission_policy: WorkerAdmissionPolicy.new,
+                   command_executor: Open3.method(:capture3))
       @plan = plan
       @workers = workers
       @workdir = File.expand_path(workdir)
@@ -26,6 +27,7 @@ module WorkloadOrchestrator
       @rpof_client = rpof_client
       @capacity_session = capacity_session
       @admission_policy = admission_policy
+      @command_executor = command_executor
       @remote_halt_mutex = Mutex.new
       @remote_halted = false
       @job_positions = plan.jobs.each_with_index.to_h { |job, index| [job.id, index + 1] }.freeze
@@ -389,7 +391,7 @@ module WorkloadOrchestrator
     end
 
     def execute_command(job, environment, started_at)
-      stdout, stderr, status = Open3.capture3(environment, *job.argv, chdir: workdir)
+      stdout, stderr, status = @command_executor.call(environment, *job.argv, chdir: workdir)
       store.write_logs(job, stdout, stderr)
       terminal = status.success? ? "complete" : "failed"
       store.record_terminal!(job: job, status: terminal, started_at: started_at, exit_status: status.exitstatus)

@@ -14,6 +14,22 @@ require "workload_orchestrator"
 module WloTestSupport
   DIGEST = ("a" * 64).freeze
 
+  FakeCommandStatus = Struct.new(:exitstatus) do
+    def success?
+      exitstatus.zero?
+    end
+  end
+
+  def command_result(exit_status: 0, stdout: "", stderr: "")
+    [stdout, stderr, FakeCommandStatus.new(exit_status)]
+  end
+
+  def fixture_job(id, pool_id: "local-pool", group_id: nil)
+    row = { "job_id" => id, "pool_id" => pool_id, "argv" => ["fixture-command", id] }
+    row["group_id"] = group_id if group_id
+    row
+  end
+
   def write_plan(root, jobs:, pools: nil, failure_policy: nil, name: "plan.json")
     pools ||= [command_pool]
     failure_policy ||= { "max_consecutive_failures" => 2, "max_total_failures" => 3 }
