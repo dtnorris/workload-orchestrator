@@ -87,7 +87,7 @@ class AfwWloV03ContractTest < Minitest::Test
     assert_includes error.message, "unknown field"
   end
 
-  def test_v03_execution_fails_closed_until_dw11_scheduler_exists
+  def test_v03_static_execution_still_fails_closed_without_a_dynamic_worker_source
     plan = load_fixture("valid/grouped-no-dependencies.json")
     Dir.mktmpdir("wlo-v03-run-") do |workdir|
       output = File.join(workdir, "output")
@@ -96,7 +96,7 @@ class AfwWloV03ContractTest < Minitest::Test
       )
 
       error = assert_raises(WorkloadOrchestrator::Error) { runner.run }
-      assert_includes error.message, "DW-11 work-conserving scheduler"
+      assert_includes error.message, "requires a dynamic worker source"
       refute Dir.exist?(output)
     end
   end

@@ -402,7 +402,7 @@ module WorkloadOrchestrator
     def rebuild_jobs_unlocked
       rows = plan.jobs.map do |job|
         metadata = metadata_for(job)
-        {
+        row = {
           "job_id" => job.id,
           "pool_id" => job.pool_id,
           "status" => metadata ? metadata.fetch("status") : "pending",
@@ -412,6 +412,9 @@ module WorkloadOrchestrator
           "failure_class" => metadata && metadata["failure_class"],
           "failure_reason" => metadata&.dig("evidence", "reason")
         }
+        row["worker_execution_identity"] = metadata["worker_execution_identity"] if
+          metadata&.key?("worker_execution_identity")
+        row
       end
       write_json(File.join(output_dir, "jobs.json"), { "jobs" => rows })
     end

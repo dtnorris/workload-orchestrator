@@ -6,11 +6,12 @@ require_relative "pool_fulfillment"
 require_relative "rpof_contract"
 require_relative "worker_admission_policy"
 require_relative "worker_registry_poller"
+require_relative "dynamic_scheduler"
 
 module WorkloadOrchestrator
   class Runner
     attr_reader :plan, :workers, :workdir, :store, :worker_registry_poller,
-                :worker_loss_reconciler
+                :worker_loss_reconciler, :dynamic_scheduler
 
     RemoteWorker = Struct.new(:name, :index, keyword_init: true)
 
@@ -36,14 +37,16 @@ module WorkloadOrchestrator
       @worker_poll_interval = worker_poll_interval
       @worker_registry_clock = worker_registry_clock
       @worker_registry_sleeper = worker_registry_sleeper
+      @dynamic_schedule_mutex = Mutex.new
+      @dynamic_threads = []
       @remote_halt_mutex = Mutex.new
       @remote_halted = false
       @job_positions = plan.jobs.each_with_index.to_h { |job, index| [job.id, index + 1] }.freeze
     end
 
     def run(resume: false, acknowledge_circuit_breaker: false)
-      if plan.priority_scheduling?
-        raise Error, "wlo-execution-plan/v0.3 execution requires the DW-11 work-conserving scheduler"
+      if plan.priority_scheduling? && !dynamic_workers?
+        raise Error, "wlo-execution-plan/v0.3 work-conserving execution requires a dynamic worker source"
       end
 
       validate_workdir!
@@ -103,18 +106,82 @@ module WorkloadOrchestrator
       )
       @worker_loss_reconciler ||= DynamicWorkerLossReconciler.new(store: store)
       worker_loss_reconciler.reconcile!(worker_registry_poller)
+      @dynamic_scheduler ||= DynamicScheduler.new(plan: plan, store: store) if plan.priority_scheduling?
       worker_registry_poller.run(stop: method(:stop_dynamic_polling?)) do |poller|
         worker_loss_reconciler.reconcile!(poller)
+        if dynamic_scheduler
+          schedule_dynamic_assignments(
+            poller.ready_workers, current_workers: poller.current_workers
+          )
+        end
       end
+      join_dynamic_threads
       store.record_interruption!(@interrupt_signal) if @interrupt_signal
       finalize_and_report(resource_cleanup_pending: false)
     rescue Error => e
+      join_dynamic_threads
       if @interrupt_signal
         store.record_interruption!(@interrupt_signal)
       else
         store.record_dispatch_halt!(kind: "worker_registry", error: e.message) unless store.dispatch_halted?
       end
       raise
+    ensure
+      @dynamic_threads.clear
+    end
+
+    def schedule_dynamic_assignments(workers, current_workers: workers)
+      return if stop_dispatch?
+
+      @dynamic_schedule_mutex.synchronize do
+        return if stop_dispatch?
+
+        dynamic_scheduler.assignments(workers: workers, current_workers: current_workers).each do |assignment|
+          break if stop_dispatch?
+
+          attempt = store.record_dynamic_running!(
+            job: assignment.job, worker: assignment.worker, environment_keys: assignment.job.env.keys
+          )
+          launch_dynamic_assignment(assignment, attempt)
+        end
+      end
+    end
+
+    def launch_dynamic_assignment(assignment, attempt)
+      job = assignment.job
+      worker = assignment.worker
+      @out.puts "[#{@job_positions.fetch(job.id)}/#{plan.jobs.length}] [#{worker.worker_id}] #{job.id}"
+      @dynamic_threads << Thread.new do
+        JobClaim.new(output_dir: store.output_dir).synchronize(job.id) do
+          execute_dynamic_command(job, attempt)
+        end
+      end
+    end
+
+    def execute_dynamic_command(job, attempt)
+      stdout, stderr, status = @command_executor.call(job.env, *job.argv, chdir: workdir)
+      record_dynamic_result(job, attempt, stdout, stderr, status)
+    rescue StandardError => e
+      @dynamic_schedule_mutex.synchronize do
+        store.write_logs(job, "", "#{e.class}: #{e.message}\n")
+        store.record_dynamic_terminal!(
+          attempt: attempt, status: "failed", exit_status: nil, error: e.message
+        )
+      end
+    end
+
+    def record_dynamic_result(job, attempt, stdout, stderr, status)
+      @dynamic_schedule_mutex.synchronize do
+        store.write_logs(job, stdout, stderr)
+        terminal = status.success? ? "complete" : "failed"
+        store.record_dynamic_terminal!(
+          attempt: attempt, status: terminal, exit_status: status.exitstatus
+        )
+      end
+    end
+
+    def join_dynamic_threads
+      @dynamic_threads.each(&:value)
     end
 
     def run_with_capacity(resume)
