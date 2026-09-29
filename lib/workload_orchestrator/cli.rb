@@ -38,11 +38,17 @@ module WorkloadOrchestrator
       when "resume" then run_command(resume: true)
       when "retry-failed" then retry_failed_command
       when "import-terminal" then import_terminal_command
-      when "status" then status_command
-      when "summary" then status_command(human: true)
+      when "status", "summary", "watch" then reporting_command(command)
       when "pause" then pause_command
       else raise Error, "unknown command #{command.inspect}; run bin/wlo --help"
       end
+    end
+
+    def reporting_command(command)
+      return status_command if command == "status"
+      return status_command(human: true) if command == "summary"
+
+      watch_command
     end
 
     def validate_command
@@ -136,6 +142,22 @@ module WorkloadOrchestrator
       report = ExecutionReport.new(plan: load_plan(plan_path), output: output)
       human ? report.print(@out) : @out.puts(JSON.pretty_generate(report.document))
       0
+    end
+
+    def watch_command
+      plan_path = required_argument!("PLAN.json")
+      output = nil
+      interval = ExecutionWatch::DEFAULT_INTERVAL_SECONDS
+      OptionParser.new do |opts|
+        opts.on("--output DIR") { |value| output = value }
+        opts.on("--interval SECONDS", Float) { |value| interval = value }
+      end.parse!(@argv)
+      reject_extra_arguments!
+      raise OptionParser::MissingArgument, "--output DIR" if output.to_s.empty?
+
+      ExecutionWatch.new(
+        plan: load_plan(plan_path), output: output, out: @out, interval_seconds: interval
+      ).run
     end
 
     def retry_failed_command
@@ -396,6 +418,7 @@ module WorkloadOrchestrator
                         [--rpof-executable FILE --paid-budget FILE --authorize-paid-rpof]
           bin/wlo status PLAN.json --output DIR [--human | --json]
           bin/wlo summary PLAN.json --output DIR [--json]
+          bin/wlo watch PLAN.json --output DIR [--interval SECONDS]
           bin/wlo pause --output DIR
           bin/wlo resume PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--acknowledge-circuit-breaker]
                          [--execution-profile FILE --rpof-executable FILE --paid-budget FILE --authorize-paid-rpof]

@@ -102,6 +102,18 @@ bin/wlo status examples/hello-plan.json \
   --output output/hello-local
 ```
 
+Watch a live consolidated execution and its last accepted dynamic-worker state:
+
+```bash
+bin/wlo watch examples/hello-plan.json \
+  --output output/hello-local \
+  --interval 1
+```
+
+`watch` is read-only. It reads the execution directory, never contacts a
+provider, and exits automatically after `completed` or `workload_failed`.
+Ctrl-C stops only the watcher.
+
 A normal rerun or resume skips `complete` and `failed` jobs unless a failed
 job has been explicitly authorized for retry using `retry-failed`.
 

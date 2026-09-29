@@ -153,6 +153,39 @@ class WorkerRegistryPollerTest < Minitest::Test
     assert_includes error.message, "rolled back"
   end
 
+  def test_checkpoint_retains_the_validated_immutable_worker_snapshot
+    worker = fixture_document.fetch("workers").first
+    poller = build_poller(SequenceSource.new(snapshot(revision: 7, workers: [worker])))
+
+    poller.poll_once
+
+    row = poller.accepted_checkpoint.fetch("workers").first
+    persisted = row.fetch("worker_snapshot")
+    assert_equal worker.fetch("labels"), persisted.fetch("labels")
+    assert_equal worker.fetch("capabilities"), persisted.fetch("capabilities")
+    assert_equal worker.fetch("generation_id"), persisted.fetch("generation_id")
+    assert_equal 7, persisted.fetch("registry_revision")
+    assert_equal poller.registry.sha256, persisted.fetch("registry_snapshot_sha256")
+  end
+
+  def test_legacy_checkpoint_without_worker_snapshot_remains_resumable
+    worker = fixture_document.fetch("workers").first
+    bytes = snapshot(revision: 7, workers: [worker])
+    build_poller(SequenceSource.new(bytes)).poll_once
+    legacy = JSON.parse(File.read(@checkpoint))
+    legacy.fetch("workers").each { |row| row.delete("worker_snapshot") }
+    legacy.fetch("last_reconciliation").each_value do |rows|
+      rows.each { |row| row.delete("worker_snapshot") if row.is_a?(Hash) }
+    end
+    File.write(@checkpoint, JSON.generate(legacy))
+
+    resumed = build_poller(SequenceSource.new(bytes))
+    resumed.poll_once
+
+    assert_equal 7, resumed.accepted_checkpoint.fetch("revision")
+    assert resumed.accepted_checkpoint.dig("workers", 0).key?("worker_snapshot")
+  end
+
   def test_resume_rejects_registry_identity_change_and_same_revision_byte_change
     build_poller(SequenceSource.new(snapshot(revision: 8, workers: []))).poll_once
 

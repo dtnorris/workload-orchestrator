@@ -56,6 +56,27 @@ The recorded PID identifies a past launch; it alone does not prove liveness.
 Older runs without manager records or latest-run timestamps remain readable.
 Latest-run elapsed time excludes readiness checks and previous paused periods.
 
+For a continuously refreshed consolidated view, use:
+
+```bash
+bin/wlo watch PLAN.json --output OUTPUT [--interval SECONDS]
+```
+
+The default interval is one second. Interactive terminals redraw one compact
+dashboard; redirected output receives plain periodic snapshots without cursor
+control. The watcher exits automatically for `completed` and `workload_failed`
+executions, and Ctrl-C exits the watcher without interrupting the execution.
+
+`watch` reads `execution.json`, `jobs.json`, current running-attempt metadata,
+the pause sentinel, the execution lock, optional manager records, and the last
+accepted `dynamic-workers/checkpoint.json`. It does not instantiate a runner or
+poller, contact RPOF, claim work, or write execution state. Busy workers are
+matched to running attempts by their complete execution identity, including
+generation and capability fingerprint. New checkpoints retain the validated
+DW-19 worker snapshot so the existing scheduler can derive compatible capacity;
+legacy checkpoints remain readable and are labeled when exact eligibility is
+unavailable.
+
 ## Pause, resume and retry
 
 ```bash

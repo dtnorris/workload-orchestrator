@@ -17,6 +17,7 @@ module WorkloadOrchestrator
     WORKER_KEYS = %w[
       worker_id generation_id endpoint state capability_fingerprint execution_identity
     ].freeze
+    WORKER_OPTIONAL_KEYS = %w[worker_snapshot].freeze
 
     attr_reader :current_workers, :ready_workers, :last_reconciliation,
                 :reconciliation_history, :registry
@@ -160,7 +161,8 @@ module WorkloadOrchestrator
         "endpoint" => worker.endpoint,
         "state" => worker.state,
         "capability_fingerprint" => worker.capability_fingerprint,
-        "execution_identity" => worker.execution_identity
+        "execution_identity" => worker.execution_identity,
+        "worker_snapshot" => DynamicWorkerBinding.from_worker(worker).worker_snapshot
       }
     end
 
@@ -193,7 +195,7 @@ module WorkloadOrchestrator
 
       document = JSON.parse(File.read(@checkpoint_path))
       validate_checkpoint_header!(document)
-      validate_checkpoint_workers!(document.fetch("workers"), document.fetch("registry_id"))
+      validate_checkpoint_workers!(document.fetch("workers"), document)
       validate_reconciliation!(document.fetch("last_reconciliation"))
       validate_reconciliation_history!(document.fetch("reconciliation_history"))
 
@@ -218,21 +220,46 @@ module WorkloadOrchestrator
       %w[published_at expires_at accepted_at].each { |field| Time.iso8601(document.fetch(field)) }
     end
 
-    def validate_checkpoint_workers!(workers, registry_id)
+    def validate_checkpoint_workers!(workers, checkpoint)
       raise Error, "worker registry checkpoint workers must be an array" unless workers.is_a?(Array)
 
       ids = workers.map do |worker|
-        exact_keys!(worker, WORKER_KEYS, "worker registry checkpoint worker")
+        worker_keys!(worker)
         identity = worker.fetch("execution_identity")
-        expected = [registry_id, worker.fetch("worker_id"), worker.fetch("generation_id"),
+        expected = [checkpoint.fetch("registry_id"), worker.fetch("worker_id"), worker.fetch("generation_id"),
                     worker.fetch("endpoint"), worker.fetch("capability_fingerprint")]
         raise Error, "worker registry checkpoint execution identity is invalid" unless identity == expected
         raise Error, "worker registry checkpoint worker state is invalid" unless
           DynamicWorkerRegistry::STATES.include?(worker.fetch("state"))
 
+        validate_worker_snapshot!(worker, checkpoint) if worker["worker_snapshot"]
+
         worker.fetch("worker_id")
       end
       raise Error, "worker registry checkpoint has duplicate workers" unless ids.uniq == ids
+    end
+
+    def worker_keys!(worker)
+      raise Error, "worker registry checkpoint worker must be an object" unless worker.is_a?(Hash)
+
+      missing = WORKER_KEYS - worker.keys
+      unknown = worker.keys - WORKER_KEYS - WORKER_OPTIONAL_KEYS
+      raise Error, "worker registry checkpoint worker fields are invalid" unless missing.empty? && unknown.empty?
+    end
+
+    def validate_worker_snapshot!(worker, checkpoint)
+      identity = DynamicWorkerBinding::IDENTITY_KEYS.zip(worker.fetch("execution_identity")).to_h
+      registry = {
+        "registry_revision" => checkpoint.fetch("revision"),
+        "registry_snapshot_sha256" => checkpoint.fetch("snapshot_sha256")
+      }
+      binding = DynamicWorkerBinding.new(
+        execution_identity: identity,
+        registry_binding: registry,
+        worker_snapshot: worker.fetch("worker_snapshot")
+      )
+      raise Error, "worker registry checkpoint snapshot state conflicts" unless
+        binding.worker_snapshot.fetch("state") == worker.fetch("state")
     end
 
     def validate_reconciliation!(value)
