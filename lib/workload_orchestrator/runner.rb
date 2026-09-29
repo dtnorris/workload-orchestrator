@@ -5,22 +5,26 @@ require "time"
 require_relative "pool_fulfillment"
 require_relative "rpof_contract"
 require_relative "worker_admission_policy"
+require_relative "worker_registry_poller"
 
 module WorkloadOrchestrator
   class Runner
-    attr_reader :plan, :workers, :workdir, :store
+    attr_reader :plan, :workers, :workdir, :store, :worker_registry_poller
 
     RemoteWorker = Struct.new(:name, :index, keyword_init: true)
 
     def initialize(plan:, workers:, workdir:, output_dir:, worker_check: WorkerCheck.new, out: $stdout,
                    rpof_client: nil, capacity_session: nil, admission_policy: WorkerAdmissionPolicy.new,
-                   command_executor: Open3.method(:capture3))
+                   command_executor: Open3.method(:capture3), worker_source: nil,
+                   worker_poll_interval: WorkerRegistryPoller::DEFAULT_INTERVAL_SECONDS,
+                   worker_registry_clock: -> { Time.now.utc }, worker_registry_sleeper: nil)
       @plan = plan
       @workers = workers
       @workdir = File.expand_path(workdir)
+      @worker_source = worker_source
       @store = ExecutionStore.new(
         output_dir: output_dir, plan: plan, workdir: @workdir,
-        workers_sha256: plan.execution_profile && workers.execution_sha256(plan)
+        workers_sha256: plan.execution_profile && !dynamic_workers? ? workers.execution_sha256(plan) : nil
       )
       @worker_check = worker_check
       @out = out
@@ -28,6 +32,9 @@ module WorkloadOrchestrator
       @capacity_session = capacity_session
       @admission_policy = admission_policy
       @command_executor = command_executor
+      @worker_poll_interval = worker_poll_interval
+      @worker_registry_clock = worker_registry_clock
+      @worker_registry_sleeper = worker_registry_sleeper
       @remote_halt_mutex = Mutex.new
       @remote_halted = false
       @job_positions = plan.jobs.each_with_index.to_h { |job, index| [job.id, index + 1] }.freeze
@@ -35,7 +42,7 @@ module WorkloadOrchestrator
 
     def run(resume: false, acknowledge_circuit_breaker: false)
       validate_workdir!
-      workers.validate_plan!(plan)
+      workers.validate_plan!(plan) unless dynamic_workers?
       store.with_execution_lock do
         store.prepare!
         install_interrupt_handlers
@@ -54,9 +61,16 @@ module WorkloadOrchestrator
       return finalize_and_report if store.paused?
 
       raise Error, "circuit breaker is tripped; resume with explicit acknowledgement" if store.circuit_tripped?
+
       if store.dispatch_halted?
+        if store.dispatch_halt.fetch("kind") == "worker_registry"
+          raise Error, "worker registry polling is halted after a fatal validation error"
+        end
+
         raise Error, "remote dispatch is halted; explicitly retry the failed/in-doubt attempt after reviewing evidence"
       end
+
+      return run_with_dynamic_workers if dynamic_workers?
 
       check_workers!
       validate_remote_jobs!
@@ -67,6 +81,30 @@ module WorkloadOrchestrator
       store.start!
       schedule_jobs
       finalize_and_report
+    end
+
+    def run_with_dynamic_workers
+      counts = store.counts
+      return finalize_and_report(resource_cleanup_pending: false) if (counts["pending"] + counts["running"]).zero?
+
+      store.start!
+      @worker_registry_poller ||= WorkerRegistryPoller.new(
+        source: @worker_source,
+        checkpoint_path: File.join(store.output_dir, "dynamic-workers", "checkpoint.json"),
+        clock: @worker_registry_clock,
+        interval_seconds: @worker_poll_interval,
+        sleeper: @worker_registry_sleeper
+      )
+      worker_registry_poller.run(stop: method(:stop_dynamic_polling?))
+      store.record_interruption!(@interrupt_signal) if @interrupt_signal
+      finalize_and_report(resource_cleanup_pending: false)
+    rescue Error => e
+      if @interrupt_signal
+        store.record_interruption!(@interrupt_signal)
+      else
+        store.record_dispatch_halt!(kind: "worker_registry", error: e.message) unless store.dispatch_halted?
+      end
+      raise
     end
 
     def run_with_capacity(resume)
@@ -408,6 +446,13 @@ module WorkloadOrchestrator
       @interrupt_signal || store.paused? || store.circuit_tripped? || @remote_halt_mutex.synchronize { @remote_halted }
     end
 
+    def stop_dynamic_polling?
+      return true if stop_dispatch?
+
+      counts = store.counts
+      (counts["pending"] + counts["running"]).zero?
+    end
+
     def capacity_session_path
       File.join(store.output_dir, "capacity", "session.json")
     end
@@ -421,7 +466,8 @@ module WorkloadOrchestrator
     end
 
     def install_interrupt_handlers
-      return unless rpof? && Thread.current == Thread.main
+      return unless (rpof? || dynamic_workers?) && Thread.current == Thread.main
+
       @previous_handlers = %w[INT TERM].to_h do |signal|
         [signal, Signal.trap(signal) { @interrupt_signal ||= signal }]
       end
@@ -433,6 +479,10 @@ module WorkloadOrchestrator
 
     def rpof?
       plan.execution_profile&.rpof? == true
+    end
+
+    def dynamic_workers?
+      !@worker_source.nil?
     end
 
     def rpof_pool?(pool)
