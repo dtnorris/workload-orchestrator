@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "test_helper"
+require "timeout"
 
 class RemoteRunnerTest < Minitest::Test
   class FakeLifecycle
@@ -18,13 +19,14 @@ class RemoteRunnerTest < Minitest::Test
 
   class FakeCapacitySession
     attr_accessor :output_dir, :cleanup_phase
-    attr_reader :calls, :outcomes, :lifecycle
+    attr_reader :calls, :outcomes, :lifecycle, :admission_calls
     attr_accessor :admission_error
 
     def initialize(handoff)
       @handoff = handoff
       @calls = []
       @outcomes = []
+      @admission_calls = 0
       @lifecycle = FakeLifecycle.new
     end
 
@@ -49,6 +51,7 @@ class RemoteRunnerTest < Minitest::Test
     end
 
     def admit_worker(pool_id:, handoff:, lifecycle:)
+      @admission_calls += 1
       raise @admission_error if @admission_error
       handoff.merge("target" => handoff.fetch("target").merge("worker_indices" => [1, 2]),
                     "bootstrap_samples_seconds" => [0.001, 0.001])
@@ -257,8 +260,8 @@ class RemoteRunnerTest < Minitest::Test
     assert decisions.any? { |row| row.dig("decision", "reason") == "admitted" }
   end
 
-  def test_failed_admission_halts_dispatch_without_changing_job_outcomes
-    @plan = remote_plan(%w[first second third fourth], desired: 2)
+  def test_failed_optional_admission_disables_expansion_but_completes_existing_queue
+    @plan = remote_plan(%w[first second third fourth fifth], desired: 2, concurrency: 2)
     client = FakeClient.new
     client.delay = 0.002
     client.started = Queue.new
@@ -269,17 +272,57 @@ class RemoteRunnerTest < Minitest::Test
     assert_equal "first", client.started.pop
     client.release << true
     assert_equal "second", client.started.pop
-    sleep 0.25
-    client.release << true
-    assert_equal "infrastructure_failed", task.value
-    assert_equal "complete", metadata("first").fetch("status")
-    assert_equal "capacity_admission", store.dispatch_halt.fetch("kind")
+    Timeout.timeout(2) do
+      sleep 0.01 until session.admission_calls == 1 && File.file?(File.join(@output, "worker-admissions.jsonl")) &&
+                       File.read(File.join(@output, "worker-admissions.jsonl")).include?("admission_failed")
+    end
+    4.times { client.release << true }
+    assert_equal "completed", task.value
+    assert_equal({ "complete" => 5 }, compact_counts)
+    refute store.dispatch_halted?
+    assert_equal 1, session.admission_calls
     assert_equal [1], client.requests.map { |row| row.dig("target", "worker_indices") }.flatten.uniq
+    decisions = File.readlines(File.join(@output, "worker-admissions.jsonl")).map { |line| JSON.parse(line) }
+    assert_equal 1, decisions.count { |row| row.dig("decision", "reason") == "admission_failed" }
+    assert_includes decisions.find { |row| row.dig("decision", "reason") == "admission_failed" }
+                             .dig("decision", "error"), "capacity fixture failed"
+    assert runner(client, session, admission_policy: AlwaysUseful.new).send(:expansion_disabled?, "remote-pool")
+    assert_equal "verified_provider_absence", JSON.parse(File.read(File.join(@output, "execution.json")))
+                                             .dig("resource_disposition", "phase")
+  end
+
+  def test_real_policy_expands_from_minimum_to_allowed_concurrency
+    @plan = remote_plan(%w[first second third fourth fifth], desired: 3, concurrency: 2)
+    @handoff["bootstrap_samples_seconds"] = [0.001]
+    client = FakeClient.new
+    client.started = Queue.new
+    client.release = Queue.new
+    session = FakeCapacitySession.new(@handoff)
+    base = Time.now
+    offset = 0
+    Time.stub(:now, -> { base + offset }) do
+      task = Thread.new { runner(client, session).run }
+      assert_equal "first", client.started.pop
+      offset = 20
+      client.release << true
+      assert_equal "second", client.started.pop
+      third = Timeout.timeout(2) { client.started.pop }
+      assert_includes %w[third fourth fifth], third
+      4.times { client.release << true }
+      assert_equal "completed", task.value
+    end
+    assert_equal 1, session.admission_calls
+    assert_includes client.requests.map { |row| row.dig("target", "worker_indices") }, [2]
+    decisions = File.readlines(File.join(@output, "worker-admissions.jsonl")).map { |line| JSON.parse(line) }
+    decision = decisions.find { |row| row.dig("decision", "reason") == "useful_capacity" }
+    assert decision.dig("decision", "estimated_seconds_saved") >= 5
+    assert_equal "verified_provider_absence", JSON.parse(File.read(File.join(@output, "execution.json")))
+                                             .dig("resource_disposition", "phase")
   end
 
   private
 
-  def remote_plan(ids, desired: 1)
+  def remote_plan(ids, desired: 1, concurrency: 1)
     plan = {
       "contract_version" => WorkloadOrchestrator::Plan::LOGICAL_CONTRACT_VERSION,
       "plan_id" => "remote-fixture",
@@ -295,7 +338,7 @@ class RemoteRunnerTest < Minitest::Test
     profile = {
       "contract_version" => WorkloadOrchestrator::ExecutionProfile::CONTRACT_VERSION,
       "pools" => [{
-        "pool_id" => "remote-pool", "backend" => "rpof", "max_concurrency" => 1,
+        "pool_id" => "remote-pool", "backend" => "rpof", "max_concurrency" => concurrency,
         "min_workers" => 1, "desired_workers" => desired, "max_hourly_rate_usd" => 1.0
       }],
       "budget" => { "max_hourly_rate_usd" => 1.0, "max_total_cost_usd" => 2.0, "max_runtime_seconds" => 120 }

@@ -147,15 +147,16 @@ module WorkloadOrchestrator
 
       queue = Queue.new
       pending.each { |job| queue << job }
+      expansion_disabled = rpof_pool?(pool) && expansion_disabled?(pool.id)
       threads = selected_workers(pool).map { |worker| worker_thread(worker, queue) }
       if rpof_pool?(pool)
-        coordinate_admissions(pool, jobs, queue, threads)
+        coordinate_admissions(pool, jobs, queue, threads, expansion_disabled: expansion_disabled)
       else
         threads.each(&:value)
       end
     end
 
-    def coordinate_admissions(pool, jobs, queue, threads)
+    def coordinate_admissions(pool, jobs, queue, threads, expansion_disabled:)
       handoff = @remote_handoffs.fetch(pool.id)
       samples = handoff.fetch("bootstrap_samples_seconds", [])
       observed = 0
@@ -168,7 +169,7 @@ module WorkloadOrchestrator
           metadata["elapsed_seconds"] if metadata && metadata["status"] == "complete" &&
                                          metadata["elapsed_seconds"].to_f.positive?
         end
-        if completions.length > observed && queue.size.positive?
+        if !expansion_disabled && completions.length > observed && queue.size.positive?
           observed = completions.length
           deadline = Time.iso8601(handoff.fetch("deadline_at_utc")) - Time.now.utc
           decision = @admission_policy.evaluate(
@@ -180,11 +181,19 @@ module WorkloadOrchestrator
           )
           record_admission_decision(pool.id, decision)
           if decision.fetch("expand") && !stop_dispatch?
+            # A failed guardian/budget check still halts execution; optional
+            # admission errors only disable acceleration for this pool.
+            check_admission_budget!
             begin
-              @budget_lifecycle.check!
               admitted = @capacity_session.admit_worker(
                 pool_id: pool.id, handoff: handoff, lifecycle: @budget_lifecycle
               )
+            rescue StandardError => e
+              record_admission_decision(pool.id, { "expand" => false, "reason" => "admission_failed",
+                                                    "error" => e.message })
+              expansion_disabled = true
+              check_admission_budget!
+            else
               handoff = admitted
               @remote_handoffs[pool.id] = admitted
               samples = admitted.fetch("bootstrap_samples_seconds")
@@ -195,10 +204,6 @@ module WorkloadOrchestrator
                 threads << worker_thread(RemoteWorker.new(name: "rpof:#{pool.id}:burst_#{worker_index}",
                                                           index: worker_index).freeze, queue)
               end
-            rescue StandardError => e
-              record_admission_decision(pool.id, { "expand" => false, "reason" => "admission_failed",
-                                                    "error" => e.message })
-              halt_remote_dispatch!(nil, "capacity_admission", e.message)
             end
           end
         end
@@ -208,6 +213,31 @@ module WorkloadOrchestrator
         !stop_dispatch? && queue.empty?
     ensure
       threads.each(&:value)
+    end
+
+    def expansion_disabled?(pool_id)
+      path = File.join(store.output_dir, "worker-admissions.jsonl")
+      return false unless File.file?(path)
+
+      disabled = false
+      File.foreach(path) do |line|
+        row = JSON.parse(line)
+        unless row["plan_sha256"] == plan.sha256 &&
+               row["profile_sha256"] == plan.execution_profile.sha256
+          raise Error, "worker admission evidence differs from the original execution"
+        end
+        disabled = true if row["pool_id"] == pool_id && row.dig("decision", "reason") == "admission_failed"
+      end
+      disabled
+    rescue JSON::ParserError, SystemCallError => e
+      raise Error, "invalid worker admission evidence: #{e.message}"
+    end
+
+    def check_admission_budget!
+      @budget_lifecycle.check!
+    rescue StandardError => e
+      halt_remote_dispatch!(nil, "budget", e.message)
+      raise
     end
 
     def record_admission_decision(pool_id, decision)
