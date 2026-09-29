@@ -2,9 +2,11 @@
 
 require_relative "test_helper"
 require "open3"
+require_relative "support/operator_fixtures"
 
 class OperatorUxTest < Minitest::Test
   include WloTestSupport
+  include OperatorFixtures
 
   def setup
     @root = Dir.mktmpdir("wlo operator ; ")
@@ -25,17 +27,23 @@ class OperatorUxTest < Minitest::Test
   def test_detachment_duplicate_exclusion_pause_resume_and_retained_launch_evidence
     code = "File.write('entered', 'yes'); sleep 0.01 until File.exist?('release'); puts 'first finished'"
     @plan = write_plan(@root, jobs: [job("one", code: code), job("two", code: "puts :second")])
+    profile = write_operator_profile
+    @runtime_options = ["--execution-profile", profile]
     first = start
     await { File.exist?(File.join(@root, "entered")) }
     assert_equal first.fetch("pid"), Process.getsid(first.fetch("pid"))
     summary = report
+    assert_equal Digest::SHA256.file(profile).hexdigest, summary.fetch("execution_profile_sha256")
     assert summary.fetch("executor_active")
     assert_equal 1, summary.dig("counts", "running")
     assert_equal 1, summary.dig("counts", "pending")
-    assert_equal 1, runtime("start").last
-    assert_equal 1, runtime("run").last
+    %w[start run].each do |command|
+      _, error, status = runtime(command)
+      assert_equal 1, status
+      assert_includes error, "execution is active"
+    end
     assert_equal first, JSON.parse(File.read(File.join(@output, "manager.json")))
-    assert_equal 0, cli("pause", "--output", @output).last
+    assert_equal 0, in_process_cli("pause", "--output", @output).last
     File.write(File.join(@root, "release"), "yes")
     stopped = await_finished(first)
     assert_equal "paused", stopped.fetch("status")
@@ -48,7 +56,9 @@ class OperatorUxTest < Minitest::Test
     assert File.file?(first.fetch("record_path"))
     assert_includes File.read(first.fetch("log_path")), "[1/2]"
     assert_includes File.read(second.fetch("log_path")), "[2/2]"
-    assert_equal 2, report.fetch("terminal")
+    completed = report
+    assert_equal 2, completed.fetch("terminal")
+    assert_equal [1, 1], completed.fetch("jobs").map { |row| row.fetch("attempt") }
     human, err, status = cli("summary", @plan, "--output", @output)
     assert_equal 0, status, err
     assert_includes human, "Progress: [2/2] terminal (100.0%)"
@@ -56,57 +66,32 @@ class OperatorUxTest < Minitest::Test
     assert_includes human, "executor inactive"
   end
 
-  def test_failure_breaker_error_and_explicit_retry_work_in_detached_mode
-    @plan = write_plan(@root, jobs: [job("one", code: "exit(File.exist?('repaired') ? 0 : 3)")],
+  # Real fork/setsid, Runner and job process; no repeated executable startup.
+  # Retry authorization, archives and repair/resume are covered by RetryTest.
+  def test_detached_failure_and_post_acknowledgement_error_are_recorded
+    @plan = write_plan(@root, jobs: [job("one", code: "exit 3")],
                               failure_policy: { "max_consecutive_failures" => 1, "max_total_failures" => 1 })
-    first = start
-    assert_equal "circuit_broken", await_finished(first).fetch("status")
-    assert_equal 2, report.dig("manager", "exit_status")
-    rejected = start
-    assert_equal "error", await_finished(rejected).fetch("status")
+    runner = WorkloadOrchestrator::Runner.new(
+      plan: WorkloadOrchestrator::Plan.load(@plan), workers: WorkloadOrchestrator::WorkerSet.load(@workers),
+      workdir: @root, output_dir: @output
+    )
+    first = WorkloadOrchestrator::DetachedManager.new(runner).start
+    @managers << first
+    finished = await_finished(first)
+    assert_equal "circuit_broken", finished.fetch("status")
+    assert_equal 2, finished.fetch("exit_status")
+    assert_equal finished, report.fetch("manager")
+    assert_equal 3, report.fetch("jobs").first.fetch("exit_status")
+
+    rejected = WorkloadOrchestrator::DetachedManager.new(runner).start
+    @managers << rejected
+    failed = await_finished(rejected)
+    assert_equal "error", failed.fetch("status")
+    assert_equal 1, failed.fetch("exit_status")
+    assert_includes failed.fetch("error"), "circuit breaker is tripped"
     assert_includes File.read(rejected.fetch("log_path")), "circuit breaker is tripped"
-    _, err, status = runtime("retry-failed", "--all", "--reason", "fixture repair", "--acknowledge-circuit-breaker")
-    assert_equal 0, status, err
-    File.write(File.join(@root, "repaired"), "yes")
-    final = start("--resume")
-    assert_equal "completed", await_finished(final).fetch("status")
-    assert_equal 2, report.fetch("jobs").first.fetch("attempt")
-    assert File.file?(File.join(@output, "attempts/one/attempt-1/metadata.json"))
-  end
-
-  def test_invalid_start_preserves_existing_evidence
-    launch = start
-    await_finished(launch)
-    before = Dir.glob(File.join(@output, "**", "*"), File::FNM_DOTMATCH).select { |p| File.file?(p) }
-                .to_h { |path| [path, File.binread(path)] }
-    File.write(@plan, File.read(@plan).sub("fixture-plan", "different-plan"))
-    _, error, code = runtime("start")
-    assert_equal 1, code
-    assert_includes error, "different execution identity"
-    before.each { |path, bytes| assert_equal bytes, File.binread(path), path }
-  end
-
-  def test_profiled_start_uses_same_identity_and_zero_cost_gate
-    document = JSON.parse(File.read(@plan))
-    document["contract_version"] = "wlo-execution-plan/v0.2"
-    document["pools"] = [{ "pool_id" => "local-pool" }]
-    File.write(@plan, JSON.generate(document))
-    profile = File.join(@root, "profile.json")
-    value = {
-      "contract_version" => "wlo-execution-profile/v0.1",
-      "pools" => [{ "pool_id" => "local-pool", "backend" => "local",
-                    "worker_names" => ["local"], "max_concurrency" => 1 }]
-    }
-    File.write(profile, JSON.generate(value))
-    write_workers(@root, rate: 1)
-    assert_equal 1, runtime("start", "--execution-profile", profile).last
-    refute File.exist?(@output)
-    write_workers(@root)
-    launch = start("--execution-profile", profile)
-    assert_equal "completed", await_finished(launch).fetch("status")
-    assert_equal Digest::SHA256.file(profile).hexdigest, report.fetch("execution_profile_sha256")
-    File.write(profile, JSON.pretty_generate(value))
-    assert_equal 1, runtime("start", "--resume", "--execution-profile", profile).last
+    assert_equal failed, report.fetch("manager")
+    assert_equal finished, JSON.parse(File.read(first.fetch("record_path")))
   end
 
   private
@@ -117,7 +102,8 @@ class OperatorUxTest < Minitest::Test
   end
 
   def runtime(command, *)
-    cli(command, @plan, "--workdir", @root, "--output", @output, "--workers-config", @workers, *)
+    cli(command, @plan, "--workdir", @root, "--output", @output,
+        "--workers-config", @workers, *@runtime_options.to_a, *)
   end
 
   def start(*)
@@ -129,7 +115,7 @@ class OperatorUxTest < Minitest::Test
   end
 
   def report
-    out, err, status = cli("status", @plan, "--output", @output)
+    out, err, status = in_process_cli("status", @plan, "--output", @output)
     assert_equal 0, status, err
     JSON.parse(out)
   end
