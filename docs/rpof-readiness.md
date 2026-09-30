@@ -1,3 +1,7 @@
+> Historical reference: DW-33 removed the WLO-owned RPOF execution path.
+> Commands and executable adapters below are retired. Contract identifiers and
+> persisted evidence remain valid for inspection and audit.
+
 # RPOF pool readiness
 
 > Legacy v0.2 compatibility: production v0.3 readiness comes from validated

@@ -63,10 +63,10 @@ module WorkloadOrchestrator
       document.fetch("pools").find { |row| row.fetch("pool_id") == pool_id }
     end
 
-    # Compatibility for callers that used the pre-Step-8 execution gate.
-    # Construction already validates the profile; paid authorization is checked
-    # only when an RPOF run is assembled with its exact budget and client.
+    # Historical profiles remain inspectable but cannot own production capacity.
     def ensure_runnable!
+      raise Error, "historical RPOF execution is retired; use a v0.3 dynamic worker source" if rpof?
+
       self
     end
 

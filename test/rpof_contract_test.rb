@@ -6,6 +6,40 @@ require_relative "test_helper"
 class RpofContractTest < Minitest::Test
   Contract = WorkloadOrchestrator::RpofContract
 
+  def test_historical_capability_requests_remain_strictly_readable
+    all = capability_request.merge("worker_selector" => { "mode" => "all" })
+    assert_same all, Contract.capability_request!(all)
+
+    indexed = capability_request
+    indexed["requirements"]["required_gpu_id"] = "NVIDIA A40"
+    assert_same indexed, Contract.capability_request!(indexed)
+
+    malformed = [
+      indexed.merge("extra" => true),
+      indexed.reject { |key, _value| key == "fleet_key" },
+      indexed.merge("contract_version" => "unknown"),
+      indexed.merge("fleet_key" => "bad key"),
+      indexed.merge("worker_selector" => []),
+      indexed.merge("worker_selector" => { "mode" => "unknown" }),
+      indexed.merge("worker_selector" => { "mode" => "indices", "indices" => [1, 1] }),
+      indexed.merge("requirements" => indexed.fetch("requirements").merge("models" => [])),
+      indexed.merge("requirements" => indexed.fetch("requirements").merge("required_context_length" => 0)),
+      indexed.merge("requirements" => indexed.fetch("requirements").merge("require_fully_gpu_resident" => false))
+    ]
+    malformed.each do |request|
+      assert_raises(WorkloadOrchestrator::Error) { Contract.capability_request!(request) }
+    end
+  end
+
+  def test_historical_dispatch_request_and_job_wrappers_validate_without_execution
+    request = dispatch_request
+    assert_same request, Contract.dispatch_request!(request)
+    job = request.fetch("jobs").first
+    before = Marshal.dump(job)
+    Contract.job!(job)
+    assert_equal before, Marshal.dump(job)
+  end
+
   def test_rejects_wrong_capability_identity_workers_and_readiness
     request = capability_request
     valid = capability_result

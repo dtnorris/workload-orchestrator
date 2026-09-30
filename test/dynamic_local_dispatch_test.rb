@@ -178,30 +178,28 @@ class DynamicLocalDispatchTest < Minitest::Test
     previous&.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
   end
 
-  def test_runner_factory_rejects_dynamic_plans_and_sources_with_legacy_profiles
+  def test_runner_rejects_historical_rpof_profiles_before_execution
     profile = legacy_profile
     v02 = JSON.parse(@plan.bytes).merge("contract_version" => WorkloadOrchestrator::Plan::LOGICAL_CONTRACT_VERSION)
     static_plan = WorkloadOrchestrator::Plan.new(JSON.generate(v02))
     source = Source.new { snapshot(@records) }
     [[@plan, nil], [@plan, source], [static_plan, source]].each do |plan, worker_source|
       error = assert_raises(WorkloadOrchestrator::Error) do
-        WorkloadOrchestrator::Runner.new(plan: profile.bind(plan), worker_source: worker_source)
+        WorkloadOrchestrator::Runner.new(
+          plan: profile.bind(plan), worker_source: worker_source,
+          workers: WorkloadOrchestrator::WorkerSet.new({}), workdir: @workdir, output_dir: @output
+        )
       end
-      assert_includes error.message, "cannot execute dynamic attempts"
+      assert_includes error.message, "historical RPOF execution is retired"
     end
     refute Dir.exist?(@output)
   end
 
-  def test_explicit_legacy_runner_cannot_dispatch_dynamic_work
-    require_relative "../lib/workload_orchestrator/legacy_rpof_runner"
-    error = assert_raises(WorkloadOrchestrator::Error) do
-      WorkloadOrchestrator::LegacyRpofRunner.new(
-        plan: @plan, worker_source: Source.new { snapshot(@records) },
-        rpof_client: ForbiddenProvider.new, capacity_session: ForbiddenProvider.new
-      )
+  def test_removed_legacy_execution_components_are_unavailable
+    %i[LegacyRpofRunner RpofClient RpofBudgetClient RpofCapacityClient PaidBudgetLifecycle
+       PoolFulfillment ExecutionPoolPlan RpofReadiness WorkerAdmissionPolicy].each do |name|
+      refute WorkloadOrchestrator.const_defined?(name, false), name.to_s
     end
-    assert_includes error.message, "cannot execute dynamic attempts"
-    refute Dir.exist?(@output)
   end
 
   def test_generation_replacement_halts_without_provider_replay
@@ -264,7 +262,7 @@ class DynamicLocalDispatchTest < Minitest::Test
         end
       end
       %i[RpofClient RpofBudgetClient RpofCapacityClient PoolFulfillment].each do |name|
-        WorkloadOrchestrator.send(:remove_const, name)
+        WorkloadOrchestrator.send(:remove_const, name) if WorkloadOrchestrator.const_defined?(name, false)
         WorkloadOrchestrator.const_set(name, trap)
       end
       # Loading a legacy profile schema alone must not pull in dispatch validators.
@@ -289,10 +287,12 @@ class DynamicLocalDispatchTest < Minitest::Test
         end
       ))
       begin
-        WorkloadOrchestrator::Runner.new(plan: profile.bind(plan), worker_source: source)
+        WorkloadOrchestrator::Runner.new(plan: profile.bind(plan), worker_source: source,
+                                        workers: WorkloadOrchestrator::WorkerSet.new({}),
+                                        workdir: workdir, output_dir: output)
         raise "dynamic plan routed to legacy runner"
       rescue WorkloadOrchestrator::Error => error
-        raise unless error.message.include?("cannot execute dynamic attempts")
+        raise unless error.message.include?("historical RPOF execution is retired")
       end
       runner = WorkloadOrchestrator::Runner.new(
         plan: WorkloadOrchestrator::Plan.load(plan_path), workers: WorkloadOrchestrator::WorkerSet.new({}),

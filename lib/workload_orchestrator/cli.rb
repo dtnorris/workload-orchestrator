@@ -71,7 +71,7 @@ module WorkloadOrchestrator
         @out.puts "Plan: #{plan.id} (#{plan.sha256})"
         @out.puts "Execution profile: #{plan.execution_profile.sha256}"
         @out.puts JSON.pretty_generate(plan.execution_profile.document)
-        @out.puts "Execution: RPOF-enabled with an exact paid budget and explicit authorization"
+        @out.puts "Execution: historical RPOF profile (read-only; execution retired)"
         require_workdir(options)
         return 0
       end
@@ -96,10 +96,9 @@ module WorkloadOrchestrator
               "dynamic v0.3 worker-check is not supported; inspect the registry source directly " \
               "(for RPOF: bin/rpof workers --json)"
       end
-      fixed = plan.pools.any? { |pool| plan.execution_profile&.binding_for(pool.id)&.fetch("backend") != "rpof" }
-      workers = load_workers(options) if fixed
-      client = RpofClient.new(executable: options[:rpof_executable]) if options[:rpof_executable]
-      results = WorkerCheck.new(rpof_client: client).check_plan!(plan, workers)
+      plan.execution_profile&.ensure_runnable!
+      workers = load_workers(options)
+      results = WorkerCheck.new.check_plan!(plan, workers)
       results.each { |row| print_worker_result(row) }
       0
     end
@@ -112,9 +111,9 @@ module WorkloadOrchestrator
 
       reject_extra_arguments!
       plan = load_bound_plan(plan_path, options)
+      plan.execution_profile&.ensure_runnable!
       workers = load_workers_for_plan(options, plan)
       worker_source = DynamicWorkerCLI.source_for(plan, options)
-      remote = remote_execution(plan, options)
       runner_options = {
         plan: plan,
         workers: workers,
@@ -124,10 +123,6 @@ module WorkloadOrchestrator
         worker_source: worker_source,
         worker_poll_interval: @worker_poll_interval
       }
-      if remote
-        runner_options[:rpof_client] = remote.fetch(:client)
-        runner_options[:capacity_session] = remote.fetch(:session)
-      end
       runner = Runner.new(**runner_options)
       return start_manager(runner, resume, options) if detached
 
@@ -264,8 +259,7 @@ module WorkloadOrchestrator
 
     def parse_runtime_options(require_output:, allow_acknowledge: false, detached: false)
       options = {
-        workdir: nil, output: nil, workers_config: nil, acknowledge: false,
-        authorize_paid_rpof: false
+        workdir: nil, output: nil, workers_config: nil, acknowledge: false
       }
       parser = OptionParser.new do |opts|
         add_runtime_options(opts, options, detached: detached, allow_acknowledge: allow_acknowledge)
@@ -283,9 +277,6 @@ module WorkloadOrchestrator
       parser.on("--output DIR") { |value| options[:output] = value }
       parser.on("--workers-config FILE") { |value| options[:workers_config] = value }
       parser.on("--execution-profile FILE") { |value| options[:execution_profile] = value }
-      parser.on("--rpof-executable FILE") { |value| options[:rpof_executable] = value }
-      parser.on("--paid-budget FILE") { |value| options[:paid_budget] = value }
-      parser.on("--authorize-paid-rpof") { options[:authorize_paid_rpof] = true }
       DynamicWorkerCLI.add_options(parser, options)
       return unless allow_acknowledge
 
@@ -295,7 +286,6 @@ module WorkloadOrchestrator
     def parse_worker_options
       options = { workers_config: nil }
       OptionParser.new do |opts|
-        opts.on("--rpof-executable FILE") { |value| options[:rpof_executable] = value }
         opts.on("--workers-config FILE") { |value| options[:workers_config] = value }
         opts.on("--execution-profile FILE") { |value| options[:execution_profile] = value }
       end.parse!(@argv)
@@ -344,37 +334,7 @@ module WorkloadOrchestrator
       plan.logical? ? workers.execution_sha256(plan) : nil
     end
 
-    def remote_execution(plan, options)
-      return nil unless plan.execution_profile&.rpof?
-      raise Error, "RPOF execution requires explicit --authorize-paid-rpof" unless options[:authorize_paid_rpof] == true
-
-      executable = options[:rpof_executable].to_s
-      budget_path = options[:paid_budget].to_s
-      raise Error, "RPOF execution requires --rpof-executable FILE" if executable.empty?
-      raise Error, "RPOF execution requires --paid-budget FILE" if budget_path.empty?
-
-      budget_document = JSON.parse(File.read(File.expand_path(budget_path)))
-      budget = PaidBudget.new(
-        budget_document, plan_bytes: plan.bytes, execution_profile: plan.execution_profile
-      )
-      pool_plan = ExecutionPoolPlan.new(
-        plan: plan, profile: plan.execution_profile, budget: budget
-      )
-      client = RpofCapacityClient.new(executable: executable)
-      session = PoolFulfillment.new(
-        pool_plan: pool_plan, client: client,
-        output_dir: File.join(File.expand_path(options.fetch(:output)), "capacity")
-      )
-      { client: client, session: session }
-    rescue JSON::ParserError, SystemCallError => e
-      raise Error, "cannot load paid budget: #{e.message}"
-    end
-
     def print_worker_result(row)
-      if row.provider_result
-        @out.puts "#{row.pool_id}/#{row.worker_name}: PASS #{row.detail}"
-        return
-      end
       version = row.version ? " ollama=#{row.version}" : ""
       digest = row.model_digest ? " digest=#{row.model_digest}" : ""
       @out.puts "#{row.pool_id}/#{row.worker_name}: PASS#{version}#{digest}"
@@ -446,7 +406,7 @@ module WorkloadOrchestrator
         run, start, resume and retry-failed. Retry also accepts --workers-config FILE.
         Provider capacity lifecycle is external to the v0.3 dynamic runtime.
         Dynamic v0.3 jobs run locally against the selected worker endpoint.
-        Retired v0.2 RPOF CLI compatibility remains documented separately.
+        Historical RPOF profiles can be inspected but cannot be executed.
       HELP
       0
     end

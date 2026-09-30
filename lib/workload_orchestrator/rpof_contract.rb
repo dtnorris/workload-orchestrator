@@ -4,7 +4,7 @@ require_relative "error"
 require_relative "rpof_contract_values"
 
 module WorkloadOrchestrator
-  # WLO's public boundary. The provider's older wire names belong only in RpofClient.
+  # Historical WLO/RPOF contract validators for inspection; no executable transport.
   module RpofContract
     CAPABILITY_REQUEST = "wlo-rpof-capability-check-request/v0.1"
     CAPABILITY_RESULT = "wlo-rpof-capability-check-result/v0.1"

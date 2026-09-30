@@ -125,7 +125,7 @@ class ExecutionProfileTest < Minitest::Test
     assert_raises(WorkloadOrchestrator::Error) { profile }
   end
 
-  def test_rpof_execution_requires_explicit_paid_authorization_before_output_or_worker_access
+  def test_historical_rpof_profile_is_readable_but_execution_is_retired
     @profile["pools"] = [binding_for("rpof")]
     @profile["budget"] = budget
     write_profile
@@ -133,13 +133,45 @@ class ExecutionProfileTest < Minitest::Test
     assert_equal 0, cli("validate").first
     code, out, err = cli("plan")
     assert_equal 0, code, err
-    assert_includes out, "RPOF-enabled"
-    %w[run resume].each do |command|
+    assert_includes out, "historical RPOF profile"
+    %w[run start resume worker-check].each do |command|
       code, _out, err = cli(command)
       assert_equal 1, code
-      assert_includes err, "requires explicit --authorize-paid-rpof"
+      assert_includes err, "historical RPOF execution is retired"
       refute File.exist?(File.join(@tmp, "output"))
     end
+  end
+
+  def test_historical_rpof_targets_remain_readable_and_fail_closed
+    @profile["pools"] = [binding_for("rpof").merge(
+      "target" => { "fleet_key" => "archive", "worker_selector" => { "mode" => "all" } }
+    )]
+    @profile["budget"] = budget
+    assert_equal "all", profile.binding_for("local-pool").dig("target", "worker_selector", "mode")
+
+    @profile["pools"][0]["target"]["worker_selector"] = { "mode" => "indices", "indices" => [1, 3] }
+    assert_equal [1, 3], profile.binding_for("local-pool").dig("target", "worker_selector", "indices")
+
+    [
+      { "fleet_key" => "bad key", "worker_selector" => { "mode" => "all" } },
+      { "fleet_key" => "archive", "worker_selector" => [] },
+      { "fleet_key" => "archive", "worker_selector" => { "mode" => "unknown" } }
+    ].each do |target|
+      @profile["pools"][0]["target"] = target
+      assert_raises(WorkloadOrchestrator::Error) { profile }
+    end
+  end
+
+  def test_fixed_profile_cannot_claim_historical_extended_ollama_readiness
+    @document["pools"][0]["requirements"] = ollama_pool.fetch("requirements").merge(
+      "ollama" => ollama_pool.dig("requirements", "ollama").merge("required_context_length" => 32_768)
+    )
+    bound = profile.bind(WorkloadOrchestrator::Plan.new(JSON.generate(@document)))
+
+    error = assert_raises(WorkloadOrchestrator::Error) do
+      WorkloadOrchestrator::WorkerSet.load(@workers).validate_plan!(bound)
+    end
+    assert_includes error.message, "readiness requires the RPOF backend"
   end
 
   def test_rpof_budget_declarations_require_finite_caps_but_never_authorize_spend
@@ -279,8 +311,8 @@ class ExecutionProfileTest < Minitest::Test
     args = [command, @plan_path]
     args += ["--execution-profile", @profile_path] if with_profile
     args += ["--workers-config", @workers] unless command == "validate"
-    args += ["--workdir", @tmp] if %w[plan run resume].include?(command)
-    args += ["--output", output] if %w[run resume].include?(command)
+    args += ["--workdir", @tmp] if %w[plan run start resume].include?(command)
+    args += ["--output", output] if %w[run start resume].include?(command)
     out = StringIO.new
     err = StringIO.new
     code = WorkloadOrchestrator::CLI.new(args, out: out, err: err).run

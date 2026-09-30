@@ -65,7 +65,7 @@ class PaidBudgetTest < Minitest::Test
     assert_raises(WorkloadOrchestrator::Error) do
       WorkloadOrchestrator::PaidBudget.new(declaration, plan_bytes: "exact plan bytes", execution_profile: changed)
     end
-    assert_same profile, profile.ensure_runnable!
+    assert_raises(WorkloadOrchestrator::Error) { profile.ensure_runnable! }
   end
 
   def test_rejects_missing_unknown_nonfinite_and_invalid_limits
@@ -113,138 +113,18 @@ class PaidBudgetTest < Minitest::Test
       end
     end
   end
-end
 
-class PaidBudgetLifecycleTest < Minitest::Test
-  include PaidBudgetFixtures
+  def test_historical_closed_snapshot_and_valid_guardian_remain_inspectable
+    now = Time.utc(2026, 9, 28, 23)
+    budget = make_budget
+    closed = snapshot.merge("state" => "CLOSED", "mutation_allowed" => false)
+    assert_same closed, budget.validate_snapshot!(closed, now: now)
+    guardian_status = guardian
+    assert_same guardian_status, budget.validate_guardian!(guardian_status, now: now)
 
-  class Provider
-    attr_reader :calls
-    attr_accessor :state, :guardian, :fail_arm, :fail_teardown
-
-    def initialize(state, guardian)
-      @state = state
-      @guardian = guardian
-      @calls = []
+    error = assert_raises(WorkloadOrchestrator::Error) do
+      budget.validate_snapshot!(snapshot.merge("state" => "UNKNOWN"), now: now)
     end
-
-    def arm_budget(budget:)
-      @calls << :arm
-      raise WorkloadOrchestrator::Error, "timeout after arm" if @fail_arm
-      @state
-    end
-
-    def budget_status(budget:)
-      @calls << :evaluate
-      @state
-    end
-
-    def guardian_status(budget:)
-      @calls << :guardian
-      @guardian
-    end
-
-    def heartbeat_budget(budget:)
-      @calls << :heartbeat
-      @state
-    end
-
-    def begin_budget_teardown(budget:, reason:)
-      @calls << :teardown
-      raise WorkloadOrchestrator::Error, "provider unreachable" if @fail_teardown
-      @state.merge("state" => "TEARDOWN_REQUIRED", "mutation_allowed" => false)
-    end
-  end
-
-  def setup
-    @root = Dir.mktmpdir
-    @provider = Provider.new(snapshot, guardian)
-    @lifecycles = []
-  end
-
-  def teardown
-    @lifecycles.reverse_each { |life| life.finish!(reason: "test cleanup") }
-    FileUtils.remove_entry(@root)
-  end
-
-  def lifecycle(budget = make_budget)
-    value = WorkloadOrchestrator::PaidBudgetLifecycle.new(
-      budget: budget, client: @provider, binding_path: File.join(@root, "binding.json"),
-      clock: -> { Time.utc(2026, 9, 28, 23) }
-    )
-    @lifecycles << value
-    value
-  end
-
-  def test_arm_then_verify_then_synchronous_heartbeat_and_teardown
-    life = lifecycle
-    bounds = life.start!
-    assert_equal [:arm, :guardian, :heartbeat, :guardian], @provider.calls
-    assert_equal snapshot["deadline_at_utc"], bounds["deadline_at_utc"]
-    assert_equal "ARMED", life.check!["state"]
-    assert life.finish!(reason: "completed")
-    assert_equal :teardown, @provider.calls.last
-    assert_raises(WorkloadOrchestrator::Error) { life.check! }
-  end
-
-  def test_resume_uses_existing_ledger_without_rearming_or_extending_deadline
-    first = lifecycle
-    first.start!
-    # Simulate loss of WLO only; no provider teardown or ledger mutation.
-    first.send(:stop_heartbeat)
-    first.send(:release_binding!)
-    @provider.calls.clear
-    lifecycle.start!
-    assert_equal [:evaluate, :guardian, :heartbeat, :guardian], @provider.calls
-  end
-
-  def test_changed_declaration_and_concurrent_owner_are_rejected_before_provider_calls
-    first = lifecycle
-    first.start!
-    @provider.calls.clear
-    assert_raises(WorkloadOrchestrator::Error) { lifecycle.start! }
-    assert_empty @provider.calls
-    first.send(:stop_heartbeat)
-    first.send(:release_binding!)
-    changed = make_budget(declaration.merge("max_hourly_rate_usd" => 3.0))
-    assert_raises(WorkloadOrchestrator::Error) { lifecycle(changed).start! }
-    assert_empty @provider.calls
-  end
-
-  def test_uncertain_arm_outcome_attempts_teardown_and_cannot_rearm_on_retry
-    @provider.fail_arm = true
-    assert_raises(WorkloadOrchestrator::Error) { lifecycle.start! }
-    assert_equal [:arm, :teardown], @provider.calls
-    @provider.calls.clear
-    @provider.state["state"] = "TEARDOWN_REQUIRED"
-    assert_raises(WorkloadOrchestrator::Error) { lifecycle.start! }
-    assert_equal [:evaluate, :teardown], @provider.calls
-  end
-
-  def test_resume_rejects_changed_deadline
-    first = lifecycle
-    first.start!
-    first.send(:stop_heartbeat)
-    first.send(:release_binding!)
-    # Still a valid 3600-second interval, but moved relative to the original lease.
-    @provider.state["armed_at_utc"] = (Time.utc(2026, 9, 28, 23) - 1).iso8601
-    @provider.state["deadline_at_utc"] = (Time.utc(2026, 9, 28, 23) + 3599).iso8601
-    @provider.calls.clear
-    assert_raises(WorkloadOrchestrator::Error) { lifecycle.start! }
-    assert_equal [:evaluate, :teardown], @provider.calls
-  end
-
-  def test_background_failure_latches_and_never_refreshes_stale_heartbeat
-    life = lifecycle
-    life.start!
-    @provider.calls.clear
-    @provider.state["last_orchestrator_heartbeat_at_utc"] = (Time.utc(2026, 9, 28, 23) - 31).iso8601
-    @provider.fail_teardown = true
-    life.send(:heartbeat_once!)
-    assert_equal [:evaluate, :teardown], @provider.calls
-    assert life.last_error
-    assert_raises(WorkloadOrchestrator::Error) { life.check! }
-    refute life.finish!(reason: "failed")
-    refute_includes @provider.calls, :heartbeat
+    assert_includes error.message, "invalid provider budget state"
   end
 end

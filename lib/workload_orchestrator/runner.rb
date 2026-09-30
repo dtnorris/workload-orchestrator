@@ -10,30 +10,11 @@ module WorkloadOrchestrator
     attr_reader :plan, :workers, :workdir, :store, :worker_registry_poller,
                 :worker_loss_reconciler, :dynamic_scheduler
 
-    # Compatibility value object used only after the legacy RPOF runner loads.
-    RemoteWorker = Struct.new(:name, :index, keyword_init: true)
-
-    class << self
-      # Keep the retired v0.2 RPOF runtime reachable for rollback without
-      # loading it into the v0.3 dynamic production process.
-      def new(plan:, **options, &block)
-        if self == Runner && plan.execution_profile&.rpof?
-          if plan.priority_scheduling? || options[:worker_source]
-            raise Error, "legacy RPOF dispatch cannot execute dynamic attempts"
-          end
-
-          require_relative "legacy_rpof_runner"
-          return LegacyRpofRunner.new(plan: plan, **options, &block)
-        end
-
-        super
-      end
-    end
-
     def initialize(plan:, workers:, workdir:, output_dir:, worker_check: WorkerCheck.new, out: $stdout,
                    command_executor: Open3.method(:capture3), worker_source: nil,
                    worker_poll_interval: WorkerRegistryPoller::DEFAULT_INTERVAL_SECONDS,
                    worker_registry_clock: -> { Time.now.utc }, worker_registry_sleeper: nil)
+      plan.execution_profile&.ensure_runnable!
       @plan = plan
       @workers = workers
       @workdir = File.expand_path(workdir)

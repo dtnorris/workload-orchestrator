@@ -47,9 +47,9 @@ The CLI accepts an argv-safe polling command through
 [the operator workflow](docs/operator-workflow.md) and
 [the dynamic dispatch boundary](docs/dynamic-dispatch-boundary.md).
 
-Existing v0.1 local plans and v0.2 execution profiles remain supported. The old
-v0.2 WLO-owned RPOF capacity path is isolated compatibility code pending DW-33;
-it is not loaded by the dynamic production runtime. See
+Existing v0.1 local plans and v0.2 local/fixed-remote profiles remain supported.
+DW-33 removed WLO-owned RPOF execution. Historical RPOF profiles remain readable
+but cannot run or perform provider readiness checks. See
 [legacy RPOF compatibility](docs/legacy-rpof-compatibility.md).
 
 See [the legacy execution-profile contract](docs/execution-profile-v0.1.md) for
@@ -246,28 +246,10 @@ script/check
 See `docs/execution-plan-v0.1.md` for the frozen plan shape and
 `docs/architecture.md` for ownership boundaries.
 
-## Legacy paid-budget compatibility
+## Historical paid-capacity evidence
 
-The [paid-budget contract](docs/paid-budget-v0.1.md) is retained for v0.2
-rollback compatibility. It is lazy-loaded only when an old RPOF execution
-profile is used. RPOF campaigns are the production authority for budgets,
-leases and guardians.
-
-## Legacy execution-pool fulfillment and remote execution
-
-The [step 6 capacity API](docs/execution-pool-fulfillment-v0.1.md) historically joins logical
-model requirements with WLO worker counts and cost ceilings. Explicitly authorized
-library callers can obtain ready RPOF capacity inside a guarded budget scope;
-scope exit requests teardown. The adapter preserves RPOF's independent guardian.
-Step 8 connects those handoffs to the WLO job runner. WLO sends one claimed job
-attempt to one handed-off worker at a time, so WLO remains authoritative for
-attempts, logs, `jobs.json`, pause, breaker and explicit retry. Start and resume
-require `--rpof-executable`, `--paid-budget` and `--authorize-paid-rpof` in
-addition to the logical plan and execution profile.
-
-Pause drains active attempts and retains no independent permission to spend. A
-resume can reattach only to the original budget binding, deadline and capacity;
-it never arms or fulfills again. If the guardian has expired that window, the
-fleet identity changed, or readiness/ownership no longer verifies, resume fails
-closed. This compatibility surface is retained until DW-33 and is excluded from
-the v0.3 dynamic loader and runtime. See [RPOF execution](docs/rpof-execution-v0.1.md).
+Historical RPOF profiles, budget declarations, dispatch contracts and persisted
+execution state remain inspectable. WLO no longer contains the provider clients,
+capacity fulfillment, paid lifecycle or remote runner. The old
+`--rpof-executable`, `--paid-budget` and `--authorize-paid-rpof` flags are removed.
+Current execution uses the dynamic worker registry; RPOF owns capacity safety.

@@ -26,20 +26,12 @@ require_relative "workload_orchestrator/runner"
 require_relative "workload_orchestrator/cli"
 
 module WorkloadOrchestrator
-  LEGACY_RPOF_COMPONENTS = {
+  HISTORICAL_RPOF_READERS = {
     RpofContract: "rpof_contract",
-    RpofReadiness: "rpof_readiness",
-    RpofClient: "rpof_client",
-    RpofBudgetClient: "rpof_budget_client",
-    RpofCapacityClient: "rpof_capacity_client",
-    PaidBudget: "paid_budget",
-    PaidBudgetLifecycle: "paid_budget_lifecycle",
-    ExecutionPoolPlan: "execution_pool_plan",
-    PoolFulfillment: "pool_fulfillment",
-    WorkerAdmissionPolicy: "worker_admission_policy"
+    PaidBudget: "paid_budget"
   }.freeze
 
-  LEGACY_RPOF_COMPONENTS.each do |constant, file|
+  HISTORICAL_RPOF_READERS.each do |constant, file|
     autoload constant, File.expand_path("workload_orchestrator/#{file}", __dir__)
   end
 end

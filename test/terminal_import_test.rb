@@ -271,13 +271,20 @@ class TerminalImportTest < Minitest::Test
     @handoff["plan_sha256"] = bound.sha256
     @handoff["execution_profile_sha256"] = profile.sha256
     @handoff["workers_sha256"] = workers.execution_sha256(bound)
-    subject = WorkloadOrchestrator::Runner.new(plan: bound, workers: workers, workdir: @workdir,
-      output_dir: @output, out: StringIO.new, rpof_client: Object.new,
-      capacity_session: Object.new.tap do |session|
-        session.define_singleton_method(:with_capacity) { |**| raise "paid capacity should not be acquired" }
-      end)
-    assert_equal 2, subject.store.import_terminal!(bytes: JSON.pretty_generate(@handoff) + "\n")
-    assert_equal "workload_failed", subject.run
+    subject = WorkloadOrchestrator::ExecutionStore.new(
+      plan: bound, workdir: @workdir, output_dir: @output,
+      workers_sha256: workers.execution_sha256(bound)
+    )
+    assert_equal 2, subject.import_terminal!(bytes: JSON.pretty_generate(@handoff) + "\n")
+    report = WorkloadOrchestrator::ExecutionReport.new(plan: bound, output: @output).document
+    assert_equal({ "complete" => 1, "failed" => 1, "running" => 0, "pending" => 0 }, report.fetch("counts"))
+    before = File.binread(File.join(@output, "execution.json"))
+    assert_raises(WorkloadOrchestrator::Error) do
+      WorkloadOrchestrator::Runner.new(
+        plan: bound, workers: workers, workdir: @workdir, output_dir: @output
+      )
+    end
+    assert_equal before, File.binread(File.join(@output, "execution.json"))
     refute Dir.exist?(File.join(@output, "capacity"))
   end
 

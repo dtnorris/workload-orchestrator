@@ -7,17 +7,16 @@ require "uri"
 module WorkloadOrchestrator
   class WorkerCheck
     Result = Struct.new(:pool_id, :worker_name, :ok, :detail, :version, :model_digest,
-                        :provider_result, keyword_init: true)
+                        keyword_init: true)
 
-    def initialize(fetch_json: nil, open_timeout: 3, read_timeout: 10, rpof_client: nil)
-      @rpof_client = rpof_client
+    def initialize(fetch_json: nil, open_timeout: 3, read_timeout: 10)
       @fetch_json = fetch_json || method(:http_json)
       @open_timeout = open_timeout
       @read_timeout = read_timeout
     end
 
     def check_plan(plan, workers = nil)
-      return check_remote_plan(plan, workers) if plan.execution_profile&.rpof?
+      plan.execution_profile&.ensure_runnable!
 
       raise Error, "worker configuration is required" unless workers
 
@@ -36,57 +35,7 @@ module WorkloadOrchestrator
       raise Error, "worker readiness failed: #{detail}"
     end
 
-    def check_fixed_pools!(plan, workers)
-      pools = plan.pools.reject do |pool|
-        plan.execution_profile&.binding_for(pool.id)&.fetch("backend") == "rpof"
-      end
-      workers.validate_pools!(pools)
-      results = pools.flat_map do |pool|
-        pool.worker_names.map { |name| check_worker(pool, workers.fetch(name)) }
-      end
-      failures = results.reject(&:ok)
-      unless failures.empty?
-        detail = failures.map { |row| "#{row.pool_id}/#{row.worker_name}: #{row.detail}" }.join("; ")
-        raise Error, "worker readiness failed: #{detail}"
-      end
-      results
-    end
-
     private
-
-    def check_remote_plan(plan, workers)
-      checks = {}
-      fixed = plan.pools.reject do |pool|
-        binding = plan.execution_profile.binding_for(pool.id)
-        next false unless binding.fetch("backend") == "rpof"
-
-        checks[pool.id] = RpofReadiness.new(pool, binding)
-      end
-      # Validate all input before the first provider process or HTTP request.
-      unless fixed.empty?
-        raise Error, "worker configuration is required for fixed pools" unless workers
-
-        workers.validate_pools!(fixed)
-      end
-      raise Error, "RPOF readiness requires --rpof-executable FILE" unless @rpof_client
-
-      plan.pools.flat_map do |pool|
-        if checks.key?(pool.id)
-          [check_rpof(checks.fetch(pool.id))]
-        else
-          pool.worker_names.map { |name| check_worker(pool, workers.fetch(name)) }
-        end
-      end
-    end
-
-    def check_rpof(check)
-      document = check.check(@rpof_client)
-      Result.new(pool_id: check.pool.id, worker_name: "rpof:#{check.request.fetch('fleet_key')}",
-                 ok: document.fetch("ready"), detail: check.detail(document), provider_result: document)
-    rescue Error => e
-      Result.new(pool_id: check.pool.id, worker_name: "rpof:#{check.request.fetch('fleet_key')}",
-                 ok: false, detail: e.message)
-    end
 
     def check_worker(pool, worker)
       requirement = pool.ollama_requirement

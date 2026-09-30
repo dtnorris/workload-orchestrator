@@ -1,3 +1,6 @@
+> DW-33: RPOF profiles remain readable but are rejected by run/start/resume
+> and worker-check. Local and fixed-remote execution remains supported.
+
 # Provider-neutral execution profiles
 
 > Legacy v0.2 compatibility: production v0.3 uses a provider-neutral dynamic
