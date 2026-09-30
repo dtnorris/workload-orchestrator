@@ -44,8 +44,9 @@ module WorkloadOrchestrator
     end
 
     def poll_once
+      snapshot = @source.latest_snapshot
       now = current_time
-      candidate = DynamicWorkerRegistry.from_source(@source, now: now, previous: registry)
+      candidate = DynamicWorkerRegistry.new(snapshot, now: now, previous: registry)
       validate_checkpoint_transition!(candidate) unless registry
       reconciliation = reconcile(previous_workers, candidate.entries)
       checkpoint = checkpoint_for(candidate, reconciliation, now)
@@ -57,6 +58,8 @@ module WorkloadOrchestrator
       @last_reconciliation = deep_freeze(reconciliation)
       @reconciliation_history = @checkpoint.fetch("reconciliation_history")
       self
+    rescue NotImplementedError => e
+      raise Error, e.message
     end
 
     def run(stop:)

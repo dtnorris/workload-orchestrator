@@ -133,6 +133,38 @@ class WorkerRegistryPollerTest < Minitest::Test
     assert_includes error.message, "expired"
   end
 
+  def test_snapshot_is_validated_against_time_observed_after_source_returns
+    clock_state = { now: Time.iso8601("2030-01-01T00:00:00.999999Z") }
+    source = Class.new(SequenceSource) do
+      define_method(:latest_snapshot) do
+        clock_state[:now] = Time.iso8601("2030-01-01T00:00:01.000001Z")
+        super()
+      end
+    end.new(snapshot(revision: 7, published_at: "2030-01-01T00:00:01Z", workers: []))
+    poller = WorkloadOrchestrator::WorkerRegistryPoller.new(
+      source: source,
+      checkpoint_path: @checkpoint,
+      clock: -> { clock_state.fetch(:now) }
+    )
+
+    poller.poll_once
+
+    assert_equal Time.iso8601("2030-01-01T00:00:01Z"), poller.registry.published_at
+    assert_equal "2030-01-01T00:00:01Z", poller.accepted_checkpoint.fetch("published_at")
+    assert_equal "2030-01-01T00:00:01Z", poller.accepted_checkpoint.fetch("accepted_at")
+  end
+
+  def test_future_dated_snapshot_still_fails_closed
+    source = SequenceSource.new(
+      snapshot(revision: 7, published_at: "2030-01-01T00:01:01Z", workers: [])
+    )
+
+    error = assert_raises(WorkloadOrchestrator::Error) { build_poller(source).poll_once }
+
+    assert_includes error.message, "future-dated"
+    refute File.exist?(@checkpoint)
+  end
+
   def test_resume_retains_registry_identity_revision_and_worker_binding
     worker = fixture_document.fetch("workers").first
     first = build_poller(SequenceSource.new(snapshot(revision: 8, workers: [worker])))
