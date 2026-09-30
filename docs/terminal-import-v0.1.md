@@ -14,6 +14,10 @@ bin/wlo import-terminal PLAN.json HANDOFF.json \
 
 The profile is required for a logical v0.2 plan. The workers config is needed
 for fixed workers; an all-RPOF profile does not require a local worker config.
+An unbound provider-neutral v0.3 plan requires neither option: its profile and
+worker digests remain null because terminal import performs no placement or
+dispatch. The remaining pending jobs acquire dynamic worker identity only when
+the execution is later started with its worker registry source.
 This command neither checks provider readiness nor provisions or runs workers.
 
 The handoff is UTF-8 JSON with exactly these fields:

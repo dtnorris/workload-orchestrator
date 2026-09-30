@@ -193,11 +193,10 @@ module WorkloadOrchestrator
       options = parse_import_options
       reject_extra_arguments!
       plan = load_bound_plan(plan_path, options)
-      workers = load_workers_for_plan(options, plan)
-      workers.validate_plan!(plan)
+      workers_sha256 = terminal_import_workers_sha256(options, plan)
       store = ExecutionStore.new(
         plan: plan, workdir: require_workdir(options), output_dir: options.fetch(:output),
-        workers_sha256: plan.logical? ? workers.execution_sha256(plan) : nil
+        workers_sha256: workers_sha256
       )
       count = store.import_terminal!(bytes: File.binread(File.expand_path(handoff_path)))
       @out.puts "Imported #{count} terminal jobs into #{store.output_dir}; no commands executed."
@@ -305,6 +304,18 @@ module WorkloadOrchestrator
         plan.execution_profile&.binding_for(pool.id)&.fetch("backend") != "rpof"
       end
       fixed ? load_workers(options) : WorkerSet.new({})
+    end
+
+    def terminal_import_workers_sha256(options, plan)
+      # An unbound v0.3 plan intentionally has no placement or static worker
+      # identity yet. Importing terminal evidence does not dispatch work, so its
+      # execution identity binds null profile/worker digests until the remaining
+      # pending jobs later use the dynamic registry.
+      return nil if plan.priority_scheduling? && !plan.execution_profile
+
+      workers = load_workers_for_plan(options, plan)
+      workers.validate_plan!(plan)
+      plan.logical? ? workers.execution_sha256(plan) : nil
     end
 
     def remote_execution(plan, options)

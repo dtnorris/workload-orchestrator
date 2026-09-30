@@ -175,6 +175,84 @@ class TerminalImportTest < Minitest::Test
     assert_equal 1, WorkloadOrchestrator::CLI.new(args, out: StringIO.new, err: StringIO.new).run
   end
 
+  def test_unbound_v0_3_import_starts_one_fresh_execution_with_26_complete_and_166_pending
+    pool_ids = %w[qwen27 gptoss gemma qwen]
+    jobs = (943..958).flat_map do |adventure|
+      12.times.map do |dimension|
+        id = format("production-batch-039-rerun-fixture-adv%04d-d%02d", adventure, dimension)
+        {
+          "job_id" => id,
+          "pool_id" => pool_ids.fetch(dimension % pool_ids.length),
+          "group_id" => format("ADV-%04d", adventure),
+          "argv" => ["bin/afw-score-job", "build/cases/#{id}.yml"],
+          "env" => {},
+          "depends_on_job_ids" => []
+        }
+      end
+    end
+    pools = pool_ids.map do |id|
+      {
+        "pool_id" => id,
+        "requirements" => {
+          "ollama" => {
+            "model" => "#{id}:fixture", "expected_digest" => "a" * 64,
+            "required_context_length" => 131_072, "require_fully_gpu_resident" => true
+          }
+        }
+      }
+    end
+    document = {
+      "contract_version" => WorkloadOrchestrator::Plan::PRIORITY_CONTRACT_VERSION,
+      "plan_id" => "production-batch-039-rerun-fixture",
+      "failure_policy" => { "max_consecutive_failures" => 2, "max_total_failures" => 3 },
+      "pools" => pools,
+      "jobs" => jobs
+    }
+    plan_path = File.join(@tmp, "batch039-v0.3.json")
+    File.write(plan_path, JSON.pretty_generate(document) + "\n")
+    plan = WorkloadOrchestrator::Plan.load(plan_path)
+    evidence_root = File.join(@workdir, "terminal-import-evidence")
+    FileUtils.mkdir_p(evidence_root)
+    imported = jobs.first(26).map do |job_row|
+      relative = File.join("terminal-import-evidence", "#{job_row.fetch('job_id')}.json")
+      File.write(File.join(@workdir, relative), JSON.generate("job_id" => job_row.fetch("job_id")))
+      source_row(job_row.fetch("job_id"), relative, "complete", 0, nil)
+    end
+    handoff = {
+      "contract_version" => WorkloadOrchestrator::TerminalImport::CONTRACT_VERSION,
+      "plan_id" => plan.id,
+      "plan_sha256" => plan.sha256,
+      "workdir" => File.expand_path(@workdir),
+      "execution_profile_sha256" => nil,
+      "workers_sha256" => nil,
+      "jobs" => imported
+    }
+    handoff_path = File.join(@tmp, "batch039-terminal-import.json")
+    File.write(handoff_path, JSON.pretty_generate(handoff) + "\n")
+    output = File.join(@tmp, "batch039-output")
+    args = ["import-terminal", plan_path, handoff_path, "--workdir", @workdir, "--output", output]
+
+    assert_equal 0, WorkloadOrchestrator::CLI.new(args, out: StringIO.new, err: StringIO.new).run
+    before = Dir.glob(File.join(output, "**", "*"), File::FNM_DOTMATCH).select { |path| File.file?(path) }
+      .to_h { |path| [path.delete_prefix("#{output}/"), File.binread(path)] }
+    assert_equal 0, WorkloadOrchestrator::CLI.new(args, out: StringIO.new, err: StringIO.new).run
+    assert_equal before, Dir.glob(File.join(output, "**", "*"), File::FNM_DOTMATCH).select { |path| File.file?(path) }
+      .to_h { |path| [path.delete_prefix("#{output}/"), File.binread(path)] }
+
+    rows = JSON.parse(File.read(File.join(output, "jobs.json"))).fetch("jobs")
+    assert_equal({ "complete" => 26, "pending" => 166 }, rows.group_by { |row| row.fetch("status") }.transform_values(&:length))
+    assert_equal 192, rows.length
+    state = JSON.parse(File.read(File.join(output, "execution.json")))
+    assert_equal "pending", state.fetch("status")
+    assert_equal({ "sha256" => Digest::SHA256.file(handoff_path).hexdigest,
+                   "phase" => "complete", "jobs" => 26, "completed_at" => state.dig("terminal_import", "completed_at") },
+                 state.fetch("terminal_import"))
+    %w[retry_history dispatch_halt worker_registry checkpoint pause].each { |field| refute state.key?(field) }
+    assert_equal ["execution.json"], Dir.glob(File.join(output, "**", "execution.json")).map { |path| File.basename(path) }
+    assert_equal ["jobs.json"], Dir.glob(File.join(output, "**", "jobs.json")).map { |path| File.basename(path) }
+    assert_equal 26, Dir.children(File.join(output, "runs")).length
+  end
+
   def test_all_terminal_remote_import_does_not_acquire_paid_capacity
     document = JSON.parse(File.read(@plan_path))
     document["contract_version"] = WorkloadOrchestrator::Plan::LOGICAL_CONTRACT_VERSION
