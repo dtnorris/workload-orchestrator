@@ -8,11 +8,13 @@ module WorkloadOrchestrator
   class CLI
     DEFAULT_ROOT = File.expand_path("../..", __dir__).freeze
 
-    def initialize(argv, out: $stdout, err: $stderr, root: DEFAULT_ROOT)
+    def initialize(argv, out: $stdout, err: $stderr, root: DEFAULT_ROOT,
+                   worker_poll_interval: WorkerRegistryPoller::DEFAULT_INTERVAL_SECONDS)
       @argv = argv.dup
       @out = out
       @err = err
       @root = File.expand_path(root)
+      @worker_poll_interval = worker_poll_interval
     end
 
     def run
@@ -73,10 +75,14 @@ module WorkloadOrchestrator
         require_workdir(options)
         return 0
       end
+      if DynamicWorkerCLI.unbound_plan?(plan)
+        PlanPrinter.new(@out).print(plan, WorkerSet.new({}), require_workdir(options), dynamic: true)
+        return 0
+      end
       workers = load_workers(options)
       workers.validate_plan!(plan)
       workdir = require_workdir(options)
-      print_plan(plan, workers, workdir)
+      PlanPrinter.new(@out).print(plan, workers, workdir)
       0
     end
 
@@ -85,6 +91,11 @@ module WorkloadOrchestrator
       options = parse_worker_options
       reject_extra_arguments!
       plan = load_bound_plan(plan_path, options)
+      if DynamicWorkerCLI.unbound_plan?(plan)
+        raise Error,
+              "dynamic v0.3 worker-check is not supported; inspect the registry source directly " \
+              "(for RPOF: bin/rpof workers --json)"
+      end
       fixed = plan.pools.any? { |pool| plan.execution_profile&.binding_for(pool.id)&.fetch("backend") != "rpof" }
       workers = load_workers(options) if fixed
       client = RpofClient.new(executable: options[:rpof_executable]) if options[:rpof_executable]
@@ -102,13 +113,16 @@ module WorkloadOrchestrator
       reject_extra_arguments!
       plan = load_bound_plan(plan_path, options)
       workers = load_workers_for_plan(options, plan)
+      worker_source = DynamicWorkerCLI.source_for(plan, options)
       remote = remote_execution(plan, options)
       runner_options = {
         plan: plan,
         workers: workers,
         workdir: require_workdir(options),
         output_dir: options.fetch(:output),
-        out: detached ? $stdout : @out
+        out: detached ? $stdout : @out,
+        worker_source: worker_source,
+        worker_poll_interval: @worker_poll_interval
       }
       if remote
         runner_options[:rpof_client] = remote.fetch(:client)
@@ -249,23 +263,33 @@ module WorkloadOrchestrator
     end
 
     def parse_runtime_options(require_output:, allow_acknowledge: false, detached: false)
-      options = { workdir: nil, output: nil, workers_config: nil, acknowledge: false, authorize_paid_rpof: false }
+      options = {
+        workdir: nil, output: nil, workers_config: nil, acknowledge: false,
+        authorize_paid_rpof: false
+      }
       parser = OptionParser.new do |opts|
-        opts.on("--resume") { options[:resume] = true } if detached
-        opts.on("--workdir DIR") { |value| options[:workdir] = value }
-        opts.on("--output DIR") { |value| options[:output] = value }
-        opts.on("--workers-config FILE") { |value| options[:workers_config] = value }
-        opts.on("--execution-profile FILE") { |value| options[:execution_profile] = value }
-        opts.on("--rpof-executable FILE") { |value| options[:rpof_executable] = value }
-        opts.on("--paid-budget FILE") { |value| options[:paid_budget] = value }
-        opts.on("--authorize-paid-rpof") { options[:authorize_paid_rpof] = true }
-        opts.on("--acknowledge-circuit-breaker") { options[:acknowledge] = true } if allow_acknowledge
+        add_runtime_options(opts, options, detached: detached, allow_acknowledge: allow_acknowledge)
       end
       parser.parse!(@argv)
       raise OptionParser::MissingArgument, "--workdir DIR" if options[:workdir].to_s.empty?
       raise OptionParser::MissingArgument, "--output DIR" if require_output && options[:output].to_s.empty?
 
       options
+    end
+
+    def add_runtime_options(parser, options, detached:, allow_acknowledge:)
+      parser.on("--resume") { options[:resume] = true } if detached
+      parser.on("--workdir DIR") { |value| options[:workdir] = value }
+      parser.on("--output DIR") { |value| options[:output] = value }
+      parser.on("--workers-config FILE") { |value| options[:workers_config] = value }
+      parser.on("--execution-profile FILE") { |value| options[:execution_profile] = value }
+      parser.on("--rpof-executable FILE") { |value| options[:rpof_executable] = value }
+      parser.on("--paid-budget FILE") { |value| options[:paid_budget] = value }
+      parser.on("--authorize-paid-rpof") { options[:authorize_paid_rpof] = true }
+      DynamicWorkerCLI.add_options(parser, options)
+      return unless allow_acknowledge
+
+      parser.on("--acknowledge-circuit-breaker") { options[:acknowledge] = true }
     end
 
     def parse_worker_options
@@ -300,6 +324,8 @@ module WorkloadOrchestrator
     end
 
     def load_workers_for_plan(options, plan)
+      return WorkerSet.new({}) if DynamicWorkerCLI.unbound_plan?(plan)
+
       fixed = plan.pools.any? do |pool|
         plan.execution_profile&.binding_for(pool.id)&.fetch("backend") != "rpof"
       end
@@ -320,9 +346,8 @@ module WorkloadOrchestrator
 
     def remote_execution(plan, options)
       return nil unless plan.execution_profile&.rpof?
-      unless options[:authorize_paid_rpof] == true
-        raise Error, "RPOF execution requires explicit --authorize-paid-rpof"
-      end
+      raise Error, "RPOF execution requires explicit --authorize-paid-rpof" unless options[:authorize_paid_rpof] == true
+
       executable = options[:rpof_executable].to_s
       budget_path = options[:paid_budget].to_s
       raise Error, "RPOF execution requires --rpof-executable FILE" if executable.empty?
@@ -343,32 +368,6 @@ module WorkloadOrchestrator
       { client: client, session: session }
     rescue JSON::ParserError, SystemCallError => e
       raise Error, "cannot load paid budget: #{e.message}"
-    end
-
-    def print_plan(plan, workers, workdir)
-      @out.puts "Plan: #{plan.id}"
-      @out.puts "SHA-256: #{plan.sha256}"
-      @out.puts "Execution profile: #{plan.execution_profile.sha256}" if plan.execution_profile
-      @out.puts "Workdir: #{workdir}"
-      @out.puts "Pools: #{plan.pools.length}"
-      @out.puts "Jobs: #{plan.jobs.length}"
-      if plan.priority_scheduling?
-        detail = plan.grouped_jobs? ? " (#{plan.job_groups.length} reporting groups)" : ""
-        @out.puts "Scheduling: work-conserving priority#{detail}"
-      elsif plan.grouped_jobs?
-        @out.puts "Scheduling: group-major (#{plan.job_groups.length} groups)"
-      else
-        @out.puts "Scheduling: pool-major (legacy)"
-      end
-      plan.pools.each { |pool| print_pool(pool, workers) }
-      @out.puts "Zero-cost gate: PASS"
-    end
-
-    def print_pool(pool, workers)
-      requirement = pool.ollama_requirement
-      detail = requirement ? " ollama=#{requirement.fetch('model')}" : ""
-      names = pool.worker_names.map { |name| workers.fetch(name).name }.join(",")
-      @out.puts "  #{pool.id}: workers=#{names} concurrency=#{pool.max_concurrency}#{detail}"
     end
 
     def print_worker_result(row)
@@ -426,15 +425,17 @@ module WorkloadOrchestrator
           bin/wlo plan PLAN.json --workdir DIR [--workers-config FILE]
           bin/wlo worker-check PLAN.json [--workers-config FILE] [--execution-profile FILE]
           bin/wlo run PLAN.json --workdir DIR --output DIR [--workers-config FILE]
-                      [--execution-profile FILE]
+                      [--execution-profile FILE] [--worker-source-command FILE] [--worker-source-arg ARG ...]
           bin/wlo start PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--resume]
                         [--acknowledge-circuit-breaker] [--execution-profile FILE]
+                        [--worker-source-command FILE [--worker-source-arg ARG ...]]
           bin/wlo status PLAN.json --output DIR [--human | --json]
           bin/wlo summary PLAN.json --output DIR [--json]
           bin/wlo watch PLAN.json --output DIR [--interval SECONDS]
           bin/wlo pause --output DIR
           bin/wlo resume PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--acknowledge-circuit-breaker]
                          [--execution-profile FILE]
+                         [--worker-source-command FILE [--worker-source-arg ARG ...]]
           bin/wlo retry-failed PLAN.json --workdir DIR --output DIR (--all | --job ID ...) --reason TEXT
                                [--acknowledge-circuit-breaker]
           bin/wlo import-terminal PLAN.json HANDOFF.json --workdir DIR --output DIR

@@ -4,6 +4,14 @@ Dynamic worker discovery and scheduling belong to one WLO execution. Polling
 never creates a new execution, job, or attempt, and the accepted registry
 checkpoint remains in the same output directory across pause and resume.
 
+The production CLI constructs a `CommandWorkerSource` from
+`--worker-source-command` plus repeated `--worker-source-arg` values. It
+executes that argv directly once per poll and passes stdout bytes unchanged to
+the registry parser. It does not invoke a shell, cache a snapshot, mutate
+global `ENV`, or interpret provider/domain semantics. A nonzero exit or exec
+failure is a registry-source error; stderr and exit detail are retained in the
+fail-closed dispatch-halt message.
+
 ## Waiting for capacity
 
 The persisted execution status remains `running` while the active runner owns
@@ -91,8 +99,10 @@ snapshot against the durable checkpoint, and restarts the same poll/schedule
 cycle. It does not reset attempt history.
 
 Registry contract, freshness, identity, revision, and immutable-revision
-violations remain fatal and create the existing fail-closed `worker_registry`
-dispatch halt. They are never treated as ordinary absence of capacity.
+violations, malformed command output, and source-command failures remain fatal
+and create the existing fail-closed `worker_registry` dispatch halt. They are
+never treated as ordinary absence of capacity and never fall back to static
+workers or legacy RPOF workload dispatch.
 
 DW-14 in-doubt worker-loss evidence also remains a dispatch halt. Reconciliation
 runs before scheduling, and a resulting halt prevents a replacement worker

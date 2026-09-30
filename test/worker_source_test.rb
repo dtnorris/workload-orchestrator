@@ -152,6 +152,41 @@ class WorkerSourceTest < Minitest::Test
     assert static_source.latest_snapshot.frozen?
   end
 
+  def test_command_source_executes_argv_without_a_shell_and_preserves_stdout_bytes
+    code = "require 'json'; STDOUT.write(JSON.generate(ARGV))"
+    source = WorkloadOrchestrator::CommandWorkerSource.new(
+      RbConfig.ruby, ["-e", code, "two words", "--json", "literal;not-a-shell"]
+    )
+
+    assert_equal(
+      ["two words", "--json", "literal;not-a-shell"],
+      JSON.parse(source.latest_snapshot)
+    )
+    assert_equal [RbConfig.ruby, "-e", code, "two words", "--json", "literal;not-a-shell"],
+                 source.argv
+  end
+
+  def test_command_source_reports_nonzero_exit_and_stderr
+    source = WorkloadOrchestrator::CommandWorkerSource.new(
+      RbConfig.ruby, ["-e", "warn 'registry unavailable'; exit 23"]
+    )
+
+    error = assert_raises(WorkloadOrchestrator::Error) { source.latest_snapshot }
+
+    assert_includes error.message, "exit 23"
+    assert_includes error.message, "registry unavailable"
+  end
+
+  def test_command_source_reports_exec_failure
+    source = WorkloadOrchestrator::CommandWorkerSource.new(
+      File.join(Dir.tmpdir, "missing-worker-source-#{Process.pid}")
+    )
+
+    error = assert_raises(WorkloadOrchestrator::Error) { source.latest_snapshot }
+
+    assert_includes error.message, "cannot execute worker source command"
+  end
+
   def test_contract_shape_state_and_reconciliation_fail_closed
     wrong_version = fixture_document.merge("contract_version" => "dynamic-worker-registry/v0.2")
     provider_field = fixture_document
