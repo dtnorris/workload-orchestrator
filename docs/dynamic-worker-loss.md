@@ -71,7 +71,8 @@ must bind to a currently READY registry worker through
 `record_dynamic_running!`. Prior loss and late-result evidence is never
 overwritten.
 
-DW-11 is not present at the time of this implementation. Assignment,
-compatibility-graph selection, and worker-occupancy release are therefore
-intentionally deferred; the durable attempt token and persisted reconciler
-transition are their integration interface.
+The production dynamic scheduler uses this transition directly. It maintains
+one compatibility graph and occupancy map for every logical pool in the single
+execution. Occupancy is released only after the persisted reconciler
+transition. A replacement generation can then be considered for future work,
+but it can never make the prior attempt successful or automatically retry it.

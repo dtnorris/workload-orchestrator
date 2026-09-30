@@ -49,8 +49,8 @@ v0.2 WLO-owned RPOF capacity path is isolated compatibility code pending DW-33;
 it is not loaded by the dynamic production runtime. See
 [legacy RPOF compatibility](docs/legacy-rpof-compatibility.md).
 
-See [the execution-profile contract](docs/execution-profile-v0.1.md) for the
-ownership boundary, examples, CLI, and resume rules.
+See [the legacy execution-profile contract](docs/execution-profile-v0.1.md) for
+v0.2 compatibility examples, CLI, and resume rules.
 
 ## Operator commands
 

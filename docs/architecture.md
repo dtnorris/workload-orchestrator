@@ -32,8 +32,8 @@ WLO owns:
 - audited retry authorization and failed-attempt archives;
 - failure circuit breaking;
 - immutable plan/output identity;
-- stdout/stderr/metadata execution evidence; and
-- execution-only status reporting; and
+- stdout/stderr/metadata execution evidence;
+- execution-only status reporting;
 - immutable attempt-local worker identity and registry evidence.
 
 RPOF owns RunPod fleet/resource mechanics, model/bootstrap readiness, tunnels,
@@ -41,7 +41,10 @@ leases and cost safeguards, provider scaling/replacement, campaign admission
 and teardown. It publishes ready workers through the provider-neutral registry.
 WLO reacts only to that registry and never repairs provider infrastructure.
 
-Dynamic executions retain the same execution ownership while idle. See
+One heterogeneous v0.3 plan becomes one WLO execution, scheduler and store.
+Jobs from every logical pool coexist in that execution; WLO matches each
+pending job to current compatible capacity. Dynamic executions retain the same
+execution ownership while idle. See
 [dynamic-polling.md](dynamic-polling.md) for bounded polling,
 waiting-for-capacity semantics, and scheduler-loop stop and resume rules.
 
@@ -87,9 +90,12 @@ configured worker concurrency within an executor is unchanged.
 
 The v0.3 production runtime has no paid-capacity authority. RPOF independently
 enforces cumulative spend, runtime deadlines, leases, admission and guardian
-cleanup. WLO may pause or stop its execution, but those actions do not create,
-retain or destroy provider resources. An empty or incompatible registry is the
-normal DW-16 waiting state.
+cleanup. WLO may pause, stop or crash, but those events do not create, retain or
+destroy provider resources and are not a paid-safety boundary. RPOF's original
+campaign cumulative cap, runtime deadline, hourly cap, worker limit and
+guardian remain authoritative after WLO exits. An empty or incompatible
+registry is the normal `waiting_for_capacity` state: WLO keeps polling and
+dispatches nothing.
 
 The earlier WLO-owned paid-budget and fulfillment runtime remains isolated for
 v0.2 rollback compatibility and is loaded only when an old RPOF execution
@@ -102,5 +108,11 @@ profile is explicitly used. See [legacy-rpof-compatibility.md](legacy-rpof-compa
 The production provider-neutral handoff is a v0.3 logical plan plus a
 `WorkerSource`. AFW emits no provider or resource identity. WLO binds each
 attempt to a validated registry worker and freezes that identity and snapshot
-as execution evidence. The v0.2 execution-profile overlay remains compatibility
-only; see [execution-profile-v0.1.md](execution-profile-v0.1.md).
+as execution evidence. The immutable identity is `registry_id`, `worker_id`,
+`generation_id`, `endpoint` and `capability_fingerprint`. WLO starts from the
+ordinary inherited process environment, applies the job environment, then
+injects the selected attempt's `AF_OLLAMA_BASE_URL` last. Worker disappearance
+or replacement fails the bound attempt in doubt and halts dispatch; a new
+generation may receive only future work. The v0.2 execution-profile overlay
+remains compatibility only; see
+[execution-profile-v0.1.md](execution-profile-v0.1.md).

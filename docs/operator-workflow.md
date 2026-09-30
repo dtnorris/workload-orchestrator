@@ -1,8 +1,10 @@
 # Local operator workflow
 
 WLO owns starting, observing, pausing, resuming and retrying generic workloads.
-These commands use the same plan, execution profile, worker checks, zero-cost
-policy, execution lock, job claims and breaker as foreground execution.
+These commands use the same plan, execution lock, job claims and breaker as
+foreground execution. Production v0.3 runs use a provider-neutral dynamic
+worker registry; execution profiles and their worker checks or paid-budget
+options apply only to v0.1/v0.2 compatibility paths.
 
 ## Detached execution
 

@@ -1,5 +1,9 @@
 # Provider-neutral execution profiles
 
+> Legacy v0.2 compatibility: production v0.3 uses a provider-neutral dynamic
+> worker registry and gives WLO no paid-capacity authority. This profile
+> contract remains only for recoverable executions and rollback until DW-33.
+
 Decision: separate workload intent from placement through a versioned runtime
 JSON overlay. The plan remains the workload identity; the profile is an additional
 execution identity. A profile cannot change jobs, argv, environment, group order,
