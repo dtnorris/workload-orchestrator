@@ -66,6 +66,18 @@ class OperatorUxTest < Minitest::Test
     assert_includes human, "executor inactive"
   end
 
+  def test_start_output_says_detached_work_outlives_the_invoking_cli
+    @runtime_options = ["--execution-profile", write_operator_profile]
+
+    out, err, status = runtime("start")
+
+    assert_equal 0, status, err
+    @managers << JSON.parse(File.read(File.join(@output, "manager.json")))
+    assert_includes out, "continues after this CLI or terminal exits"
+    assert_includes out, "Ctrl-C here is not a workload pause"
+    assert_includes out, "WLO never tears down paid provider capacity"
+  end
+
   # Real fork/setsid, Runner and job process; no repeated executable startup.
   # Retry authorization, archives and repair/resume are covered by RetryTest.
   def test_detached_failure_and_post_acknowledgement_error_are_recorded

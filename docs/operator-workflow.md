@@ -6,6 +6,36 @@ foreground execution. Production v0.3 runs use a provider-neutral dynamic
 worker registry; execution profiles and their worker checks or paid-budget
 options apply only to v0.1/v0.2 compatibility paths.
 
+## Command ownership and human control
+
+The operator-facing classifications below describe process ownership, not
+domain ownership:
+
+- **FOREGROUND WORK OWNER**: the invoking CLI is the active runner;
+- **DETACHED WORK LAUNCHER**: the CLI starts a separately owned process and
+  returns;
+- **READ-ONLY OBSERVER** / **ONE-SHOT INSPECTION**: the command does not own or
+  cancel execution; and
+- **CONTROL REQUEST**: the command changes retained WLO control/evidence state
+  but does not own provider resources.
+
+| Command | Classification | What remains after return | Ctrl-C / terminal loss | Intentional different action |
+| --- | --- | --- | --- | --- |
+| `run`, `resume` | FOREGROUND WORK OWNER | No WLO manager is detached. A terminated runner can leave non-terminal attempt evidence requiring inspection. | Ctrl-C interrupts the foreground runner. On the production dynamic path it stops new dispatch, waits for already-launched job threads, and records interruption; it is not the supported graceful-pause command. Terminal loss is not a cancellation or paid-safety guarantee. | Use `pause --output OUTPUT` for deliberate graceful pause. Use RPOF separately for paid teardown. |
+| `start` | DETACHED WORK LAUNCHER | The manager owns execution and continues in its own Unix session after the initiating CLI or terminal exits. | Ctrl-C after startup acknowledgement affects only the shell, not the manager. Abrupt manager death has no crash recovery or child-cancellation guarantee. | Use `pause` for WLO work. For a production campaign, use `rpof campaign stop` for capacity. |
+| `watch` | READ-ONLY OBSERVER | Any foreground or detached WLO runner, jobs, RPOF guardian, tunnels and provider resources continue unchanged. | Ctrl-C closes only the view. It does not pause/cancel work and does not tear down capacity. | Use `pause` or the applicable RPOF teardown command. |
+| `status`, `summary` | ONE-SHOT INSPECTION | All existing execution and provider processes/resources continue. | Interrupting the request has no lifecycle meaning. | Use `pause` or RPOF teardown explicitly. |
+| `pause` | CONTROL REQUEST | Running jobs and their runner remain until the existing pause contract drains them; pending jobs stay retained. | Ctrl-C after the request is durable does not strengthen it. The command never signals RPOF resources. | Wait for `running=0` and `executor inactive`; use RPOF separately for paid teardown. |
+| `retry-failed` | CONTROL REQUEST | Execution remains paused with selected failures queued. No runner is launched. | Interrupting the CLI is not execution cancellation or provider teardown. | Use `start --resume` or `resume` to run queued work. |
+| `import-terminal` | CONTROL REQUEST | Imported terminal evidence remains; no command or runner is launched. | Interrupting the request does not stop other work or resources. | Use normal WLO run/resume and RPOF lifecycle commands separately. |
+| `validate`, `plan`, `worker-check` | ONE-SHOT INSPECTION | No WLO execution owner is created. | Ctrl-C only interrupts the inspection/check. | Use `run`/`start` to execute; use RPOF to change capacity. |
+
+The cross-repository rule is absolute: a WLO pause, runner exit, Ctrl-C, shell
+exit or terminal loss is not an RPOF campaign stop. WLO never proves provider
+absence. For campaign-owned paid capacity, request teardown with
+`bin/rpof campaign stop ...`, then use campaign status until the budget is
+`CLOSED` and provider absence is verified.
+
 ## Production v0.3 dynamic execution
 
 Start the RPOF capacity campaign separately. WLO only polls its provider-neutral

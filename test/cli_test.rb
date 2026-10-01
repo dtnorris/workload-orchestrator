@@ -108,6 +108,20 @@ class CliTest < Minitest::Test
     assert_equal 0, code
   end
 
+  def test_help_declares_operator_process_ownership_and_lifecycle_boundaries
+    code, out, err = run_cli("--help")
+
+    assert_equal 0, code, err
+    assert_includes out, "run, resume    FOREGROUND WORK OWNER"
+    assert_includes out, "start          DETACHED WORK LAUNCHER"
+    assert_includes out, "watch          READ-ONLY OBSERVER"
+    assert_includes out, "Ctrl-C closes only the view"
+    assert_includes out, "Use `wlo pause --output DIR` for an intentional graceful workload pause"
+    assert_includes out, "WLO never tears down paid provider capacity"
+    assert_includes out, "campaign stop"
+    assert_includes out, "verify provider absence"
+  end
+
   private
 
   def write_priority_plan(name, jobs)

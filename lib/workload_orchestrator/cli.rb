@@ -5,6 +5,30 @@ require "json"
 require "optparse"
 
 module WorkloadOrchestrator
+  PROCESS_OWNERSHIP_HELP = <<~HELP.freeze
+    Process ownership:
+      run, resume    FOREGROUND WORK OWNER. Ctrl-C interrupts the foreground runner; it is not
+                     the documented graceful-pause path. WLO never tears down paid provider capacity.
+                     Use `wlo pause --output DIR` for an intentional graceful workload pause.
+      start          DETACHED WORK LAUNCHER. The manager continues after this CLI and its
+                     terminal exit. Later Ctrl-C in the launching shell does not stop it.
+      watch          READ-ONLY OBSERVER. Ctrl-C closes only the view; execution and paid
+                     provider resources are unchanged.
+      status,
+      summary        ONE-SHOT INSPECTION. Interrupting the request changes no lifecycle state.
+      pause          CONTROL REQUEST. Stops new WLO dispatch and lets already-running work
+                     finish under the existing pause contract; it is not provider teardown.
+      retry-failed,
+      import-terminal CONTROL REQUEST. Changes retained WLO execution evidence/state only;
+                      it neither starts execution nor changes provider capacity.
+      validate, plan,
+      worker-check   ONE-SHOT INSPECTION. No workload or provider lifecycle is owned.
+
+    Paid teardown is a separate RPOF action. For campaign-owned capacity, use
+    `bin/rpof campaign stop ...` and verify provider absence; shell or terminal loss is
+    never a substitute for an explicit lifecycle command.
+  HELP
+
   class CLI
     DEFAULT_ROOT = File.expand_path("../..", __dir__).freeze
 
@@ -136,6 +160,8 @@ module WorkloadOrchestrator
       )
       @out.puts "Detached manager started: PID #{record.fetch('pid')}"
       @out.puts "Manager log: #{record.fetch('log_path')}"
+      @out.puts "The manager continues after this CLI or terminal exits; Ctrl-C here is not a workload pause."
+      @out.puts "WLO never tears down paid provider capacity; use the applicable RPOF teardown command."
       @out.puts "Use summary to check readiness, progress and the final result."
       0
     end
@@ -407,6 +433,8 @@ module WorkloadOrchestrator
         Provider capacity lifecycle is external to the v0.3 dynamic runtime.
         Dynamic v0.3 jobs run locally against the selected worker endpoint.
         Historical RPOF profiles can be inspected but cannot be executed.
+
+        #{PROCESS_OWNERSHIP_HELP}
       HELP
       0
     end
