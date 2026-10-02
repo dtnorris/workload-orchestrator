@@ -93,7 +93,9 @@ module WorkloadOrchestrator
         handles.each { |handle| mark_cancelled(handle, signal) }
         @cleanup_threads << Thread.new { finish_cancellation } if first
       end
-      handles.each { |handle| signal_group(handle, @force_requested ? "KILL" : "TERM") }
+      handles.each do |handle|
+        force_requested? ? force_group(handle) : signal_group(handle, "TERM")
+      end
       handles.length
     end
 
@@ -182,9 +184,18 @@ module WorkloadOrchestrator
       cancellation_groups.each do |handle|
         next unless group_alive?(handle.pgid)
 
-        @mutex.synchronize { handle.termination_mode = "kill" }
-        signal_group(handle, "KILL")
+        force_group(handle)
       end
+    end
+
+    def force_group(handle)
+      claimed = @mutex.synchronize do
+        next false if handle.termination_mode == "kill"
+
+        handle.termination_mode = "kill"
+        true
+      end
+      signal_group(handle, "KILL") if claimed
     end
 
     def cancellation_groups
@@ -196,7 +207,6 @@ module WorkloadOrchestrator
     end
 
     def signal_group(handle, signal)
-      @mutex.synchronize { handle.termination_mode = "kill" } if signal == "KILL"
       Process.kill(signal, -handle.pgid)
     rescue Errno::ESRCH
       nil
