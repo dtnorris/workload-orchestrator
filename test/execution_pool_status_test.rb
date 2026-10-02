@@ -197,9 +197,15 @@ class ExecutionPoolStatusTest < Minitest::Test
     ).print(out)
 
     assert_equal evidence, evidence_digests
-    assert_includes out.string, "Pool"
-    assert_includes out.string, "Jobs C/R/F/I/P"
-    assert_match(%r{pool-a\s+0/0/0/0/1\s+1\s+0\s+1\s+READY_TO_DISPATCH}, out.string)
+    assert_match(%r{^pool-a.*0/1 0% READY r1 b0 i1 f0$}, out.string)
+    assert_match(%r{^ALL.*0/1 0% run:0 fail:0 term:0$}, out.string)
+
+    detailed = StringIO.new
+    WorkloadOrchestrator::ExecutionReport.new(
+      plan:, output: @output, clock: -> { NOW }
+    ).print(detailed, verbose: true)
+    assert_includes detailed.string, "Jobs C/R/F/I/P"
+    assert_match(%r{pool-a\s+0/0/0/0/1\s+1\s+0\s+1\s+READY_TO_DISPATCH}, detailed.string)
   end
 
   private

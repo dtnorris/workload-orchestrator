@@ -116,14 +116,20 @@ bin/wlo status PLAN.json --output OUTPUT --human
 bin/wlo status PLAN.json --output OUTPUT --json
 ```
 
-`summary` and `status --human` show execution status, execution-lock activity,
-terminal-job count/percentage, complete/failed/running/pending counts (plus
-interrupted when present), active and failed/interrupted job IDs with
-worker/attempt/exit code, pause/breaker information, latest
-run timing, and the last manager PID/log/result location. Failed jobs count as
-terminal, not successful. Explicitly queued retries become pending again, so
-terminal progress can decrease after retry authorization. Lists are capped at
-ten running and ten failed jobs; JSON retains all jobs.
+For priority-pool plans, `summary` and `status --human` default to a compact
+dashboard: one ASCII successful-completion bar per pool, in plan order, followed
+by one `ALL` bar. Pool rows show the FO-04 reason through `RUN`, `READY`,
+`WAIT`, `PAUSE`, `BLOCK`, `FAIL`, or `DONE`, plus compatible READY (`r`), busy
+(`b`), idle (`i`), and failed-job (`f`) counts. The `ALL` row reports running,
+failed, and terminal counts separately, so failed or interrupted work never
+fills the success bar. The default width is 72 columns; `--width COLUMNS`
+supports wider panes.
+
+Use `--verbose` to retain the detailed human report with execution-lock
+activity, complete/failed/running/pending/interrupted counts, job IDs, timing,
+manager records, and evidence paths. JSON is unchanged and retains every job
+and the complete FO-04 pool status model. Explicitly queued retries become
+pending again, so terminal progress can decrease after retry authorization.
 
 Plain `status` retains its JSON default and existing fields. Additive fields
 include `counts`, `total`, `terminal`, `progress_percent`, `executor_active` and
@@ -139,14 +145,15 @@ Latest-run elapsed time excludes readiness checks and previous paused periods.
 For a continuously refreshed consolidated view, use:
 
 ```bash
-bin/wlo watch PLAN.json --output OUTPUT [--interval SECONDS]
+bin/wlo watch PLAN.json --output OUTPUT [--interval SECONDS] [--verbose] [--width COLUMNS]
 ```
 
-The default interval is one second. Interactive terminals redraw one compact
-dashboard; redirected output receives plain periodic snapshots without cursor
-control. The watcher exits automatically for `completed`, `workload_failed`,
-and `interrupted` executions, and Ctrl-C exits the watcher without interrupting
-the execution.
+The default interval is one second. Interactive terminals redraw the stable
+pool-plus-overall dashboard; redirected output appends the same plain snapshots
+with separators and no cursor control. `--verbose` retains the detailed watch
+view. The watcher exits automatically for `completed`, `workload_failed`, and
+`interrupted` executions, and Ctrl-C exits the watcher without interrupting the
+execution.
 
 `watch` reads `execution.json`, `jobs.json`, current running-attempt metadata,
 the pause sentinel, the execution lock, optional manager records, and the last

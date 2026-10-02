@@ -1,9 +1,9 @@
 # Unified dynamic execution progress
 
 Dynamic runs and resumes print one plain scrollback stream for the existing
-execution. Static run output, JSON `status`, and human `summary` remain unchanged.
-There is no full-screen mode, ANSI redraw, extra terminal dependency, provider
-query, or separate watch command.
+execution. JSON `status` remains unchanged. Human `summary`, `status --human`,
+and `watch` add a compact 72-column pool dashboard; `--verbose` retains detailed
+human reporting. No renderer contacts a provider or derives scheduler truth.
 
 Each invocation begins with `EXECUTION <plan_id>` or `RESUME <plan_id>`. Progress
 counts and terminal percentage come from the same persisted `ExecutionReport`

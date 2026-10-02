@@ -178,16 +178,20 @@ module WorkloadOrchestrator
     def status_command(human: false)
       plan_path = required_argument!("PLAN.json")
       output = nil
+      verbose = false
+      width = ExecutionDashboard::DEFAULT_WIDTH
       OptionParser.new do |opts|
         opts.on("--output DIR") { |value| output = value }
         opts.on("--human") { human = true }
         opts.on("--json") { human = false }
+        opts.on("--verbose") { verbose = true }
+        opts.on("--width COLUMNS", Integer) { |value| width = value }
       end.parse!(@argv)
       reject_extra_arguments!
       raise OptionParser::MissingArgument, "--output DIR" if output.to_s.empty?
 
       report = ExecutionReport.new(plan: load_plan(plan_path), output: output)
-      human ? report.print(@out) : @out.puts(JSON.pretty_generate(report.document))
+      human ? report.print(@out, verbose:, width:) : @out.puts(JSON.pretty_generate(report.document))
       0
     end
 
@@ -195,15 +199,20 @@ module WorkloadOrchestrator
       plan_path = required_argument!("PLAN.json")
       output = nil
       interval = ExecutionWatch::DEFAULT_INTERVAL_SECONDS
+      verbose = false
+      width = ExecutionDashboard::DEFAULT_WIDTH
       OptionParser.new do |opts|
         opts.on("--output DIR") { |value| output = value }
         opts.on("--interval SECONDS", Float) { |value| interval = value }
+        opts.on("--verbose") { verbose = true }
+        opts.on("--width COLUMNS", Integer) { |value| width = value }
       end.parse!(@argv)
       reject_extra_arguments!
       raise OptionParser::MissingArgument, "--output DIR" if output.to_s.empty?
 
       ExecutionWatch.new(
-        plan: load_plan(plan_path), output: output, out: @out, interval_seconds: interval
+        plan: load_plan(plan_path), output: output, out: @out, interval_seconds: interval,
+        width:, verbose:
       ).run
     end
 
@@ -424,9 +433,9 @@ module WorkloadOrchestrator
           bin/wlo start PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--resume]
                         [--acknowledge-circuit-breaker] [--execution-profile FILE]
                         [--worker-source-command FILE [--worker-source-arg ARG ...]]
-          bin/wlo status PLAN.json --output DIR [--human | --json]
-          bin/wlo summary PLAN.json --output DIR [--json]
-          bin/wlo watch PLAN.json --output DIR [--interval SECONDS]
+          bin/wlo status PLAN.json --output DIR [--human | --json] [--verbose] [--width COLUMNS]
+          bin/wlo summary PLAN.json --output DIR [--json] [--verbose] [--width COLUMNS]
+          bin/wlo watch PLAN.json --output DIR [--interval SECONDS] [--verbose] [--width COLUMNS]
           bin/wlo pause --output DIR
           bin/wlo resume PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--acknowledge-circuit-breaker]
                          [--execution-profile FILE]

@@ -12,7 +12,7 @@ module WorkloadOrchestrator
     TERMINAL_STATUSES = %w[completed workload_failed interrupted].freeze
 
     def initialize(plan:, output:, out: $stdout, interval_seconds: DEFAULT_INTERVAL_SECONDS,
-                   sleeper: ->(seconds) { sleep(seconds) }, clock: -> { Time.now.utc })
+                   sleeper: ->(seconds) { sleep(seconds) }, **view_options)
       @plan = plan
       @root = File.expand_path(output)
       @out = out
@@ -20,7 +20,14 @@ module WorkloadOrchestrator
       raise Error, "watch interval must be positive" unless @interval_seconds.positive?
 
       @sleeper = sleeper
-      @clock = clock
+      @clock = view_options.fetch(:clock, -> { Time.now.utc })
+      unknown = view_options.keys - %i[clock width verbose]
+      raise Error, "unknown watch view options: #{unknown.join(', ')}" unless unknown.empty?
+
+      @dashboard = ExecutionDashboard.new(
+        width: view_options.fetch(:width, ExecutionDashboard::DEFAULT_WIDTH)
+      )
+      @verbose = view_options.fetch(:verbose, false)
       @tty = out.respond_to?(:tty?) && out.tty?
       @report = ExecutionReport.new(plan: plan, output: output, clock: @clock)
     rescue ArgumentError, TypeError
@@ -63,6 +70,8 @@ module WorkloadOrchestrator
 
     def render(document, clear: false)
       @out.print("\e[2J\e[H") if clear
+      return render_dashboard(document) unless @verbose
+
       @out.puts "Batch: #{document.fetch('plan_id')}"
       @out.puts "State: #{document.fetch('display_state')}"
       @out.puts progress_line(document.fetch("counts"))
@@ -80,6 +89,11 @@ module WorkloadOrchestrator
 
     class TransientRead < StandardError; end
     private_constant :TransientRead
+
+    def render_dashboard(document)
+      @out.write(@dashboard.render(document))
+      @out.puts "---" unless @tty || TERMINAL_STATUSES.include?(document.fetch("status"))
+    end
 
     def build_snapshot(report, checkpoint, attempts)
       registry = worker_registry(checkpoint, attempts)

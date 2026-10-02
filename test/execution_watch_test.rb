@@ -66,7 +66,7 @@ class ExecutionWatchTest < Minitest::Test
     paths = evidence_paths("runs/running-a/metadata.json")
     before = digests(paths)
     out = StringIO.new
-    watcher = watch(plan, out: out, sleeper: ->(*) { raise Interrupt })
+    watcher = watch(plan, out: out, sleeper: ->(*) { raise Interrupt }, verbose: true)
 
     assert_equal 0, watcher.run
     assert_equal before, digests(paths)
@@ -180,10 +180,10 @@ class ExecutionWatchTest < Minitest::Test
 
     assert_equal 0, watch(plan, out: out, sleeper: ->(*) { sleeps += 1 }).run
     assert_equal 0, sleeps
-    assert_includes out.string, "State: Completed"
+    assert_includes out.string, "DONE"
     code, cli_out, err = run_cli("watch", @plan_path, "--output", @output, "--interval", "0.25")
     assert_equal 0, code, err
-    assert_includes cli_out, "State: Completed"
+    assert_includes cli_out, "DONE"
   end
 
   def test_ctrl_c_stops_only_the_watcher
@@ -208,7 +208,7 @@ class ExecutionWatchTest < Minitest::Test
 
     assert_equal 0, watch(plan, out: out, sleeper: sleeper).run
     assert_equal 1, out.string.scan("\e[2J\e[H").length
-    refute_includes out.string, "---"
+    refute_includes out.string, "\n---\n"
   end
 
   def test_missing_checkpoint_is_reported_without_fabricated_workers
@@ -243,8 +243,10 @@ class ExecutionWatchTest < Minitest::Test
 
     assert_equal 0, watch(plan, out: out, sleeper: sleeper).run
     assert_equal 2, sleeps
-    assert_includes out.string, "Batch: watch-fixture"
-    assert_includes out.string, "Progress: 0 complete / 0 running / 1 pending / 0 failed"
+    assert_match(%r{^model-a.*0/1 0%}, out.string)
+    assert_match(%r{^ALL.*0/1 0%}, out.string)
+    assert_includes out.string, "\n---\n"
+    refute_includes out.string, "\e["
   end
 
   private
@@ -352,9 +354,9 @@ class ExecutionWatchTest < Minitest::Test
     store
   end
 
-  def watch(plan, out: StringIO.new, sleeper: ->(*) { raise "unexpected sleep" })
+  def watch(plan, out: StringIO.new, sleeper: ->(*) { raise "unexpected sleep" }, verbose: false)
     WorkloadOrchestrator::ExecutionWatch.new(
-      plan: plan, output: @output, out: out, sleeper: sleeper, clock: -> { NOW }
+      plan: plan, output: @output, out: out, sleeper: sleeper, clock: -> { NOW }, verbose:
     )
   end
 

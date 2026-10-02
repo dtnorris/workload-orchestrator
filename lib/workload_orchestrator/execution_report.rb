@@ -27,8 +27,16 @@ module WorkloadOrchestrator
       raise Error, "cannot read execution status: #{e.message}"
     end
 
-    def print(out)
+    def print(out, verbose: false, width: ExecutionDashboard::DEFAULT_WIDTH)
       state = document
+      return print_dashboard(out, state, width) unless verbose || state.fetch("pool_status").empty?
+
+      print_detailed(out, state)
+    end
+
+    private
+
+    def print_detailed(out, state)
       out.puts "Plan: #{state.fetch('plan_id')}"
       out.puts "Execution: #{state.fetch('status')} | executor #{state['executor_active'] ? 'active' : 'inactive'}"
       out.puts "Progress: [#{state['terminal']}/#{state['total']}] terminal (#{state['progress_percent']}%)"
@@ -42,7 +50,9 @@ module WorkloadOrchestrator
       out.puts "Evidence: #{@root}"
     end
 
-    private
+    def print_dashboard(out, state, width)
+      out.write(ExecutionDashboard.new(width:).render(state))
+    end
 
     def report_document(state, jobs, counts, terminal)
       state.merge(

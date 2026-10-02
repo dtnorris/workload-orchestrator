@@ -73,7 +73,7 @@ class Dw13ConsolidatedExecutionTest < Minitest::Test
 
     json = cli_status(plan, "status")
     assert_equal report, JSON.parse(json)
-    human = cli_status(plan, "summary")
+    human = cli_status(plan, "summary", "--verbose")
     assert_includes human, "Progress: [2/4] terminal (50.0%)"
     assert_includes human, "Jobs: complete=1 failed=1 running=1 pending=1"
     assert_equal %w[execution.json jobs.json plan.json],
@@ -318,11 +318,11 @@ class Dw13ConsolidatedExecutionTest < Minitest::Test
     WorkloadOrchestrator::ExecutionReport.new(plan: plan, output: @output).document
   end
 
-  def cli_status(_plan, command)
+  def cli_status(_plan, command, *flags)
     out = StringIO.new
     err = StringIO.new
     code = WorkloadOrchestrator::CLI.new(
-      [command, @plan_path, "--output", @output], out: out, err: err, root: @tmp
+      [command, @plan_path, "--output", @output, *flags], out: out, err: err, root: @tmp
     ).run
     assert_equal 0, code, err.string
     out.string
