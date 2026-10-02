@@ -120,6 +120,32 @@ class CliTest < Minitest::Test
     assert_includes out, "WLO never tears down paid provider capacity"
     assert_includes out, "campaign stop"
     assert_includes out, "verify provider absence"
+    assert_includes out, "bin/wlo doctor"
+    assert_includes out, "bin/wlo logs"
+  end
+
+  def test_doctor_and_logs_are_read_only_short_diagnostics
+    code, = run_cli(
+      "run", @plan_path, "--workdir", @workdir, "--output", @output,
+      "--workers-config", @workers_path
+    )
+    assert_equal 0, code
+
+    code, out, err = run_cli("doctor", @plan_path, "job-1", "--output", @output, "--json")
+    assert_equal 0, code, err
+    assert_equal "healthy", JSON.parse(out).fetch("stage")
+
+    code, out, err = run_cli("doctor", @plan_path, "job-1", "--output", @output)
+    assert_equal 0, code, err
+    assert_includes out, "job-1  HEALTHY  healthy"
+
+    code, out, err = run_cli("logs", @plan_path, "job-1", "--output", @output, "--lines", "1", "--json")
+    assert_equal 0, code, err
+    assert_equal "job-1", JSON.parse(out).dig("subject", "id")
+
+    code, out, err = run_cli("logs", @plan_path, "job-1", "--output", @output, "--lines", "1")
+    assert_equal 0, code, err
+    assert_includes out, "job-1 logs"
   end
 
   private

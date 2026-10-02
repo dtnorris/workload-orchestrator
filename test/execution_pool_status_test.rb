@@ -50,6 +50,8 @@ class ExecutionPoolStatusTest < Minitest::Test
     assert_equal "WORKERS_NOT_READY", row.fetch("reason")
     assert_equal 1, row.dig("workers", "not_ready")
     assert_equal 0, row.dig("workers", "compatible_ready")
+    assert_equal ["worker-a"], row.fetch("relevant_worker_ids")
+    assert_equal 1, row.fetch("registry_revision")
   end
 
   def test_ready_incompatible_worker_is_distinct
@@ -86,6 +88,7 @@ class ExecutionPoolStatusTest < Minitest::Test
     assert_equal "ALL_COMPATIBLE_WORKERS_BUSY", rows.fetch("pool-b").fetch("reason")
     assert_equal 1, rows.fetch("pool-b").dig("workers", "busy")
     assert_equal 0, rows.fetch("pool-b").dig("workers", "idle")
+    assert_equal ["worker-a"], rows.fetch("pool-b").fetch("relevant_worker_ids")
   end
 
   def test_pause_precedes_idle_capacity

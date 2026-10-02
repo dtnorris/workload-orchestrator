@@ -16,8 +16,8 @@ module WorkloadOrchestrator
                      terminal exit. Later Ctrl-C in the launching shell does not stop it.
       watch          READ-ONLY OBSERVER. Ctrl-C closes only the view; execution and paid
                      provider resources are unchanged.
-      status,
-      summary        ONE-SHOT INSPECTION. Interrupting the request changes no lifecycle state.
+      status, summary,
+      doctor, logs   ONE-SHOT INSPECTION. Interrupting the request changes no lifecycle state.
       pause          CONTROL REQUEST. Stops new WLO dispatch and lets already-running work
                      finish under the existing pause contract; it is not provider teardown.
       retry-failed,
@@ -68,6 +68,8 @@ module WorkloadOrchestrator
       when "retry-failed" then retry_failed_command
       when "import-terminal" then import_terminal_command
       when "status", "summary", "watch" then reporting_command(command)
+      when "doctor" then doctor_command
+      when "logs" then logs_command
       when "pause" then pause_command
       else raise Error, "unknown command #{command.inspect}; run bin/wlo --help"
       end
@@ -214,6 +216,58 @@ module WorkloadOrchestrator
         plan: load_plan(plan_path), output: output, out: @out, interval_seconds: interval,
         width:, verbose:
       ).run
+    end
+
+    def doctor_command
+      plan_path = required_argument!("PLAN.json")
+      handle = required_argument!("JOB")
+      output, json = parse_diagnostic_options
+      reject_extra_arguments!
+      result = ExecutionDoctor.new(plan: load_plan(plan_path), output: output).diagnose(handle)
+      json ? @out.puts(JSON.pretty_generate(result)) : print_diagnosis(result)
+      0
+    end
+
+    def logs_command
+      plan_path = required_argument!("PLAN.json")
+      handle = required_argument!("JOB")
+      output, json, lines = parse_diagnostic_options(allow_lines: true)
+      reject_extra_arguments!
+      result = ExecutionDoctor.new(plan: load_plan(plan_path), output: output).logs(handle, lines: lines)
+      json ? @out.puts(JSON.pretty_generate(result)) : print_logs(result)
+      0
+    end
+
+    def parse_diagnostic_options(allow_lines: false)
+      output = nil
+      json = false
+      lines = ExecutionDoctor::DEFAULT_LOG_LINES
+      OptionParser.new do |opts|
+        opts.on("--output DIR") { |value| output = value }
+        opts.on("--json") { json = true }
+        opts.on("--lines N", Integer) { |value| lines = value } if allow_lines
+      end.parse!(@argv)
+      raise OptionParser::MissingArgument, "--output DIR" if output.to_s.empty?
+
+      allow_lines ? [output, json, lines] : [output, json]
+    end
+
+    def print_diagnosis(result)
+      subject = result.fetch("subject")
+      @out.puts "#{subject.fetch('handle')}  #{result.fetch('status').upcase}  #{result.fetch('stage')}"
+      @out.puts result.fetch("summary")
+      result.fetch("evidence").each { |row| @out.puts "evidence: #{JSON.generate(row)}" }
+      action = result["next_action"]
+      @out.puts "next: #{JSON.generate(action)}" if action
+    end
+
+    def print_logs(result)
+      @out.puts "#{result.dig('subject', 'handle')} logs"
+      %w[stderr stdout].each do |stream|
+        row = result.fetch(stream)
+        @out.puts "#{stream}: #{row.fetch('path')}"
+        row.fetch("lines").each { |line| @out.puts line }
+      end
     end
 
     def retry_failed_command
@@ -436,6 +490,8 @@ module WorkloadOrchestrator
           bin/wlo status PLAN.json --output DIR [--human | --json] [--verbose] [--width COLUMNS]
           bin/wlo summary PLAN.json --output DIR [--json] [--verbose] [--width COLUMNS]
           bin/wlo watch PLAN.json --output DIR [--interval SECONDS] [--verbose] [--width COLUMNS]
+          bin/wlo doctor PLAN.json JOB --output DIR [--json]
+          bin/wlo logs PLAN.json JOB --output DIR [--lines N] [--json]
           bin/wlo pause --output DIR
           bin/wlo resume PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--acknowledge-circuit-breaker]
                          [--execution-profile FILE]

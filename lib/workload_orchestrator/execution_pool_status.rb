@@ -68,11 +68,24 @@ module WorkloadOrchestrator
         "jobs" => evidence.fetch(:counts),
         "workers" => pool_worker_counts(evidence, shared),
         "state" => state_for(reason),
-        "reason" => reason
+        "reason" => reason,
+        "registry_revision" => shared.dig(:checkpoint, "revision"),
+        "relevant_worker_ids" => relevant_worker_ids(reason, evidence, shared)
       }
       registry_error = shared.fetch(:registry_error)
       row["detail"] = registry_error if reason == "REGISTRY_INVALID_OR_STALE" && registry_error
       row
+    end
+
+    def relevant_worker_ids(reason, evidence, shared)
+      workers = case reason
+                when "WORKERS_NOT_READY" then evidence.fetch(:not_ready_compatible)
+                when "ALL_COMPATIBLE_WORKERS_BUSY" then evidence.fetch(:busy)
+                when "READY_WORKERS_INCOMPATIBLE" then evidence.fetch(:ready_workers)
+                when "READY_TO_DISPATCH", "RUNNING" then evidence.fetch(:compatible)
+                else shared.fetch(:registry_workers)
+                end
+      workers.map(&:worker_id).compact.sort
     end
 
     def pool_evidence(pool, report, shared)
