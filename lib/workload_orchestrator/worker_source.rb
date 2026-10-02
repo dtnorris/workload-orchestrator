@@ -38,7 +38,7 @@ module WorkloadOrchestrator
   class CommandWorkerSource < WorkerSource
     attr_reader :argv
 
-    def initialize(command, args = [])
+    def initialize(command, args = [], command_executor: OwnedCommandRunner.new)
       super()
       values = [command, *args]
       unless values.all? { |value| value.is_a?(String) && !value.empty? }
@@ -46,10 +46,11 @@ module WorkloadOrchestrator
       end
 
       @argv = values.map { |value| value.dup.freeze }.freeze
+      @command_executor = command_executor
     end
 
     def latest_snapshot
-      stdout, stderr, status = Open3.capture3(*argv)
+      stdout, stderr, status = @command_executor.call({}, *argv, chdir: Dir.pwd)
       return stdout if status.success?
 
       detail = stderr.strip
@@ -58,6 +59,14 @@ module WorkloadOrchestrator
       raise Error, message
     rescue SystemCallError => e
       raise Error, "cannot execute worker source command #{argv.first.inspect}: #{e.message}"
+    end
+
+    def cancel(signal:, force: false)
+      @command_executor.cancel(signal: signal, force: force)
+    end
+
+    def wait_for_cancellation
+      @command_executor.wait_for_cancellation
     end
 
     private

@@ -26,6 +26,7 @@ WLO owns:
 - optional Ollama model/digest readiness checks;
 - direct local command dispatch to selected dynamic endpoints;
 - bounded pool concurrency;
+- execution-scoped job process groups and bounded foreground cancellation;
 - cross-process job claims;
 - pause and resume;
 - sticky terminal job states;
@@ -61,9 +62,10 @@ identical when resuming the same output.
 
 ## Resume and failure behavior
 
-`complete` and `failed` are terminal job states. Ordinary execution and resume
-skip both. A process that disappears while a job is recorded as `running` does
-not leave an authoritative cross-process lock: the kernel releases the `flock`,
+`complete`, `failed` and `interrupted` are terminal job states. Ordinary
+execution and resume skip all three. An interrupted execution requires explicit
+retry authorization before resume. A process that disappears while a job is
+recorded as `running` does not leave an authoritative cross-process lock: the kernel releases the `flock`,
 allowing a later executor to recover that non-terminal job.
 
 Each plan declares consecutive and total failure thresholds. When a threshold
@@ -71,8 +73,8 @@ is reached, no additional pending job is dispatched. Already-running jobs may
 finish. Continuing pending work requires explicit breaker acknowledgement;
 terminal failed jobs are still not rerun.
 
-`retry-failed` is the explicit exception to failed-job terminality. It requires
-an idle execution, validated selection and a reason; a tripped breaker also
+`retry-failed` is the explicit exception to failed/interrupted job terminality.
+It requires an idle execution, validated selection and a reason; a tripped breaker also
 requires acknowledgement. It archives WLO-owned evidence and records all
 selected attempts in one atomic execution-state update, leaving execution
 paused. Retry authorization changes the effective job status to pending only

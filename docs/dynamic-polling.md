@@ -54,7 +54,9 @@ busy loop while still stopping promptly.
 
 ## Local command endpoint binding
 
-Dynamic v0.3 commands run locally through WLO's command executor. The child
+Dynamic v0.3 commands run locally through WLO's command executor. Each child
+starts a new process group owned exclusively by that attempt; descendants
+inherit that group unless the command deliberately detaches them. The child
 starts with WLO's ordinary inherited process environment. String values in the
 job `env` map set exact values and `null` removes variables. After the selected
 worker's running attempt and exact identity are durably recorded, the launcher
@@ -92,9 +94,11 @@ conditions applies:
 - all jobs becoming terminal.
 
 A pause prevents new assignments, exits polling after already-claimed attempts
-drain, leaves unclaimed jobs pending, and preserves the registry checkpoint and
-attempt evidence. Resume uses the existing execution identity and store,
-clears the pause through the established resume path, validates the next
+drain without signalling them, leaves unclaimed jobs pending, and preserves the
+registry checkpoint and attempt evidence. SIGINT/SIGTERM instead wakes this
+wait, stops new assignments, and terminates the execution-owned job groups with
+bounded TERM-then-KILL handling. Resume uses the existing execution identity
+and store, clears the pause through the established resume path, validates the next
 snapshot against the durable checkpoint, and restarts the same poll/schedule
 cycle. It does not reset attempt history.
 

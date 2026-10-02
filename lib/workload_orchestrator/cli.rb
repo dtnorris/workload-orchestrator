@@ -7,9 +7,11 @@ require "optparse"
 module WorkloadOrchestrator
   PROCESS_OWNERSHIP_HELP = <<~HELP.freeze
     Process ownership:
-      run, resume    FOREGROUND WORK OWNER. Ctrl-C interrupts the foreground runner; it is not
-                     the documented graceful-pause path. WLO never tears down paid provider capacity.
-                     Use `wlo pause --output DIR` for an intentional graceful workload pause.
+      run, resume    FOREGROUND WORK OWNER. Ctrl-C cancels this execution, terminates only its
+                     owned job process groups (including descendants), and retains evidence.
+                     Use `wlo pause --output DIR` for an intentional graceful workload pause
+                     that stops new dispatch and does not signal running jobs.
+                     WLO never tears down paid provider capacity; neither action changes it.
       start          DETACHED WORK LAUNCHER. The manager continues after this CLI and its
                      terminal exit. Later Ctrl-C in the launching shell does not stop it.
       watch          READ-ONLY OBSERVER. Ctrl-C closes only the view; execution and paid
@@ -20,7 +22,8 @@ module WorkloadOrchestrator
                      finish under the existing pause contract; it is not provider teardown.
       retry-failed,
       import-terminal CONTROL REQUEST. Changes retained WLO execution evidence/state only;
-                      it neither starts execution nor changes provider capacity.
+                      retry-failed authorizes reviewed failed/interrupted attempts; neither
+                      command starts execution or changes provider capacity.
       validate, plan,
       worker-check   ONE-SHOT INSPECTION. No workload or provider lifecycle is owned.
 
@@ -151,6 +154,12 @@ module WorkloadOrchestrator
       return start_manager(runner, resume, options) if detached
 
       status = runner.run(resume: resume, acknowledge_circuit_breaker: options.fetch(:acknowledge, false))
+      if status == "interrupted"
+        @err.puts "Execution interrupted; retained evidence written to #{runner.store.output_dir}."
+        @err.puts "Provider capacity was not changed."
+        return runner.interrupt_signal == "TERM" ? 143 : 130
+      end
+
       %w[completed paused].include?(status) ? 0 : 2
     end
 

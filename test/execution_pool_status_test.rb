@@ -169,6 +169,23 @@ class ExecutionPoolStatusTest < Minitest::Test
     assert_equal "COMPLETE", status(plan).fetch("reason")
   end
 
+  def test_interrupted_pool_is_terminal_and_reported_truthfully
+    plan, store = prepare_execution
+    poller = accept_snapshot([worker("worker-a", "model-a")])
+    attempt = store.record_dynamic_running!(job: plan.jobs.first, worker: poller.current_workers.first,
+                                            environment_keys: [])
+    store.record_interrupted!(
+      job: plan.jobs.first, started_at: attempt.started_at, exit_status: nil, term_signal: 15,
+      evidence: { "signal" => "INT" }
+    )
+    store.record_interruption!("INT")
+
+    row = status(plan)
+    assert_equal "INTERRUPTED", row.fetch("reason")
+    assert_equal "TERMINAL", row.fetch("state")
+    assert_equal 1, row.dig("jobs", "interrupted")
+  end
+
   def test_human_report_is_compact_and_status_is_read_only
     plan, = prepare_execution
     accept_snapshot([worker("worker-a", "model-a")])
@@ -181,8 +198,8 @@ class ExecutionPoolStatusTest < Minitest::Test
 
     assert_equal evidence, evidence_digests
     assert_includes out.string, "Pool"
-    assert_includes out.string, "Jobs C/R/F/P"
-    assert_match(%r{pool-a\s+0/0/0/1\s+1\s+0\s+1\s+READY_TO_DISPATCH}, out.string)
+    assert_includes out.string, "Jobs C/R/F/I/P"
+    assert_match(%r{pool-a\s+0/0/0/0/1\s+1\s+0\s+1\s+READY_TO_DISPATCH}, out.string)
   end
 
   private

@@ -22,6 +22,7 @@ module WorkloadOrchestrator
       REGISTRY_INVALID_OR_STALE
       COMPLETE
       FAILED
+      INTERRUPTED
       NO_PENDING_WORK
       NO_RUNNABLE_WORK
     ].freeze
@@ -117,7 +118,12 @@ module WorkloadOrchestrator
     end
 
     def control_reason(report, counts)
-      return counts.fetch("failed").positive? ? "FAILED" : "COMPLETE" if terminal_pool?(counts)
+      if terminal_pool?(counts)
+        return "FAILED" if counts.fetch("failed").positive?
+        return "INTERRUPTED" if counts.fetch("interrupted").positive?
+
+        return "COMPLETE"
+      end
       return "PAUSED" if report.fetch("paused")
       return "CIRCUIT_BREAKER" if report.dig("circuit_breaker", "tripped")
 
@@ -149,19 +155,19 @@ module WorkloadOrchestrator
       when "RUNNING" then "ACTIVE"
       when "READY_TO_DISPATCH" then "RUNNABLE"
       when "PAUSED", "CIRCUIT_BREAKER", "DISPATCH_HALTED", "REGISTRY_INVALID_OR_STALE" then "BLOCKED"
-      when "COMPLETE", "FAILED", "NO_PENDING_WORK" then "TERMINAL"
+      when "COMPLETE", "FAILED", "INTERRUPTED", "NO_PENDING_WORK" then "TERMINAL"
       else "WAITING"
       end
     end
 
     def terminal_pool?(counts)
       counts.fetch("pending").zero? && counts.fetch("running").zero? &&
-        (counts.fetch("complete") + counts.fetch("failed")).positive?
+        (counts.fetch("complete") + counts.fetch("failed") + counts.fetch("interrupted")).positive?
     end
 
     def job_counts(jobs)
       observed = jobs.map { |job| job.fetch("status") }.tally
-      %w[complete running failed pending].to_h { |status| [status, observed.fetch(status, 0)] }
+      %w[complete running failed interrupted pending].to_h { |status| [status, observed.fetch(status, 0)] }
     end
 
     def runnable_jobs(pool_jobs, all_jobs)

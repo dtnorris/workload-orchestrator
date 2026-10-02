@@ -16,7 +16,7 @@ module WorkloadOrchestrator
 
       jobs = read_json("jobs.json").fetch("jobs")
       counts = job_counts(jobs)
-      terminal = counts.fetch("complete") + counts.fetch("failed")
+      terminal = counts.fetch("complete") + counts.fetch("failed") + counts.fetch("interrupted", 0)
       report = report_document(state, jobs, counts, terminal)
       apply_owner_crash!(report)
       report["pool_status"] = ExecutionPoolStatus.new(
@@ -73,7 +73,9 @@ module WorkloadOrchestrator
 
     def job_counts(jobs)
       observed = jobs.map { |job| job.fetch("status") }.tally
-      %w[complete failed running pending].to_h { |status| [status, observed.fetch(status, 0)] }
+      statuses = %w[complete failed running pending]
+      statuses << "interrupted" if observed.fetch("interrupted", 0).positive?
+      statuses.to_h { |status| [status, observed.fetch(status, 0)] }
     end
 
     def print_controls(out, state)
@@ -86,11 +88,11 @@ module WorkloadOrchestrator
       return if pools.empty?
 
       out.puts "Pools:"
-      out.puts "  Pool             Jobs C/R/F/P  Ready  Busy  Idle  State"
+      out.puts "  Pool             Jobs C/R/F/I/P  Ready  Busy  Idle  State"
       pools.each do |pool|
         jobs = pool.fetch("jobs")
         workers = pool.fetch("workers")
-        counts = %w[complete running failed pending].map { |key| jobs.fetch(key) }.join("/")
+        counts = %w[complete running failed interrupted pending].map { |key| jobs.fetch(key) }.join("/")
         out.puts format(
           "  %<pool>-16s %<counts>-13s %<ready>5d %<busy>5d %<idle>5d  %<state>s",
           pool: pool.fetch("pool_id"), counts:, ready: workers.fetch("compatible_ready"),
@@ -101,7 +103,7 @@ module WorkloadOrchestrator
 
     def human_pool_state(pool)
       reason = pool.fetch("reason")
-      return reason if %w[RUNNING READY_TO_DISPATCH COMPLETE FAILED].include?(reason)
+      return reason if %w[RUNNING READY_TO_DISPATCH COMPLETE FAILED INTERRUPTED].include?(reason)
 
       "#{pool.fetch('state')}: #{reason.downcase.tr('_', ' ')}"
     end
@@ -142,7 +144,7 @@ module WorkloadOrchestrator
     end
 
     def print_jobs(out, jobs, active)
-      %w[running failed].each do |status|
+      %w[running failed interrupted].each do |status|
         selected = jobs.select { |row| row["status"] == status }
         selected.first(10).each do |row|
           reason = row["failure_reason"] ? " reason=#{row['failure_reason']}" : ""

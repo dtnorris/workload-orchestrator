@@ -17,7 +17,8 @@ module WorkloadOrchestrator
     include DynamicWorkerLossState
 
     CONTRACT_VERSION = "wlo-execution-state/v0.1"
-    TERMINAL_JOB_STATUSES = %w[complete failed].freeze
+    TERMINAL_JOB_STATUSES = %w[complete failed interrupted].freeze
+    RETRYABLE_JOB_STATUSES = %w[failed interrupted].freeze
 
     attr_reader :output_dir, :plan, :workdir
 
@@ -157,7 +158,8 @@ module WorkloadOrchestrator
       allowed = TERMINAL_JOB_STATUSES + ["running"]
       raise Error, "invalid job status #{status.inspect} in #{path}" unless allowed.include?(status)
 
-      if status == "failed" && read_execution.fetch("retry_pending", {})[job.id] == document.fetch("attempt", 1)
+      if RETRYABLE_JOB_STATUSES.include?(status) &&
+         read_execution.fetch("retry_pending", {})[job.id] == document.fetch("attempt", 1)
         document.merge("status" => "pending")
       else
         document
@@ -197,6 +199,23 @@ module WorkloadOrchestrator
       document["evidence"] = evidence if evidence
       write_json(metadata_path(job), document)
       record_breaker_result!(status, classification)
+      rebuild_jobs!
+    end
+
+    def record_interrupted!(job:, started_at:, exit_status:, term_signal:, evidence:)
+      document = metadata_for(job) || {}
+      completed_at = Time.now
+      document.merge!(
+        "status" => "interrupted",
+        "completed_at" => completed_at.iso8601,
+        "elapsed_seconds" => (completed_at - started_at).round(3),
+        "exit_status" => exit_status,
+        "term_signal" => term_signal,
+        "failure_class" => nil,
+        "error" => "foreground execution cancelled by #{evidence.fetch('signal')}",
+        "evidence" => evidence
+      )
+      write_json(metadata_path(job), document)
       rebuild_jobs!
     end
 
@@ -378,12 +397,13 @@ module WorkloadOrchestrator
       return "running" if current["running"].positive?
       return "pending" if current["pending"].positive?
       return "workload_failed" if current["failed"].positive?
+      return "interrupted" if current["interrupted"].positive?
 
       "completed"
     end
 
     def terminal_execution?(state)
-      %w[completed workload_failed].include?(state.fetch("status").to_s)
+      %w[completed workload_failed interrupted].include?(state.fetch("status").to_s)
     end
 
     def update_execution

@@ -21,7 +21,7 @@ domain ownership:
 
 | Command | Classification | What remains after return | Ctrl-C / terminal loss | Intentional different action |
 | --- | --- | --- | --- | --- |
-| `run`, `resume` | FOREGROUND WORK OWNER | No WLO manager is detached. A terminated runner can leave non-terminal attempt evidence requiring inspection. | Ctrl-C interrupts the foreground runner. On the production dynamic path it stops new dispatch, waits for already-launched job threads, and records interruption; it is not the supported graceful-pause command. Terminal loss is not a cancellation or paid-safety guarantee. | Use `pause --output OUTPUT` for deliberate graceful pause. Use RPOF separately for paid teardown. |
+| `run`, `resume` | FOREGROUND WORK OWNER | No WLO manager is detached. | Ctrl-C stops new dispatch, wakes polling, sends TERM to each execution-owned job process group, escalates surviving groups to KILL after one second, reaps direct children, and retains partial output plus `interrupted` attempt evidence. A second Ctrl-C skips the remaining grace interval. | Use `pause --output OUTPUT` for a graceful drain that never signals running jobs. Use RPOF separately for paid teardown. |
 | `start` | DETACHED WORK LAUNCHER | The manager owns execution and continues in its own Unix session after the initiating CLI or terminal exits. | Ctrl-C after startup acknowledgement affects only the shell, not the manager. Abrupt manager death has no crash recovery or child-cancellation guarantee. | Use `pause` for WLO work. For a production campaign, use `rpof campaign stop` for capacity. |
 | `watch` | READ-ONLY OBSERVER | Any foreground or detached WLO runner, jobs, RPOF guardian, tunnels and provider resources continue unchanged. | Ctrl-C closes only the view. It does not pause/cancel work and does not tear down capacity. | Use `pause` or the applicable RPOF teardown command. |
 | `status`, `summary` | ONE-SHOT INSPECTION | All existing execution and provider processes/resources continue. | Interrupting the request has no lifecycle meaning. | Use `pause` or RPOF teardown explicitly. |
@@ -30,9 +30,9 @@ domain ownership:
 | `import-terminal` | CONTROL REQUEST | Imported terminal evidence remains; no command or runner is launched. | Interrupting the request does not stop other work or resources. | Use normal WLO run/resume and RPOF lifecycle commands separately. |
 | `validate`, `plan`, `worker-check` | ONE-SHOT INSPECTION | No WLO execution owner is created. | Ctrl-C only interrupts the inspection/check. | Use `run`/`start` to execute; use RPOF to change capacity. |
 
-The cross-repository rule is absolute: a WLO pause, runner exit, Ctrl-C, shell
-exit or terminal loss is not an RPOF campaign stop. WLO never proves provider
-absence. For campaign-owned paid capacity, request teardown with
+The cross-repository rule is absolute: a WLO pause, foreground cancellation,
+runner exit, shell exit or terminal loss is not an RPOF campaign stop. WLO never
+proves provider absence. For campaign-owned paid capacity, request teardown with
 `bin/rpof campaign stop ...`, then use campaign status until the budget is
 `CLOSED` and provider absence is verified.
 
@@ -117,8 +117,9 @@ bin/wlo status PLAN.json --output OUTPUT --json
 ```
 
 `summary` and `status --human` show execution status, execution-lock activity,
-terminal-job count/percentage, complete/failed/running/pending counts, active and
-failed job IDs with worker/attempt/exit code, pause/breaker information, latest
+terminal-job count/percentage, complete/failed/running/pending counts (plus
+interrupted when present), active and failed/interrupted job IDs with
+worker/attempt/exit code, pause/breaker information, latest
 run timing, and the last manager PID/log/result location. Failed jobs count as
 terminal, not successful. Explicitly queued retries become pending again, so
 terminal progress can decrease after retry authorization. Lists are capped at
@@ -143,8 +144,9 @@ bin/wlo watch PLAN.json --output OUTPUT [--interval SECONDS]
 
 The default interval is one second. Interactive terminals redraw one compact
 dashboard; redirected output receives plain periodic snapshots without cursor
-control. The watcher exits automatically for `completed` and `workload_failed`
-executions, and Ctrl-C exits the watcher without interrupting the execution.
+control. The watcher exits automatically for `completed`, `workload_failed`,
+and `interrupted` executions, and Ctrl-C exits the watcher without interrupting
+the execution.
 
 `watch` reads `execution.json`, `jobs.json`, current running-attempt metadata,
 the pause sentinel, the execution lock, optional manager records, and the last
@@ -155,6 +157,29 @@ generation and capability fingerprint. New checkpoints retain the validated
 DW-19 worker snapshot so the existing scheduler can derive compatible capacity;
 legacy checkpoints remain readable and are labeled when exact eligibility is
 unavailable.
+
+## Foreground cancellation
+
+During `run` or foreground `resume`, SIGINT cancels only that WLO execution.
+Every job is launched in its own process group, so WLO can signal the direct
+child and descendants without matching process names or signalling the parent
+shell. The first Ctrl-C stops dispatch and sends TERM; after a one-second grace
+interval WLO sends KILL only to surviving owned groups. A second Ctrl-C requests
+that escalation immediately. WLO waits for its direct children and output
+readers before returning exit status 130. SIGTERM follows the same scoped path
+and returns 143.
+
+Cancelled attempts become terminal `interrupted` attempts. Metadata retains
+the attempt, worker binding, request time, signal, owned PID/process-group ID,
+TERM-versus-KILL outcome, exit information, and partial stdout/stderr. Ordinary
+resume fails closed while interrupted attempts remain. Review their possible
+side effects, authorize them with `retry-failed --job ... --reason ...`, then
+resume. Completed attempts and never-dispatched pending jobs are preserved.
+
+This guarantee applies when SIGINT/SIGTERM reaches the foreground WLO process.
+It does not cover SIGKILL, power or kernel failure, or terminal loss that sends
+no signal. Cancellation never contacts RPOF and never changes provider
+capacity.
 
 ## Pause, resume and retry
 
@@ -183,10 +208,10 @@ checkpoint, execution identity and attempt history remain in OUTPUT. Supply the
 original profile for profiled legacy runs. `--resume` is explicit: ordinary
 `start` honors a retained pause request. If the breaker is tripped,
 acknowledge it using `--resume --acknowledge-circuit-breaker` only after
-reviewing the cause. Existing `retry-failed` selects and archives failed
-attempts; a subsequent `start --resume` executes those queued retries. Start
-never implicitly retries a failed job. Foreground `run` and `resume` remain
-available with the same source options.
+reviewing the cause. Existing `retry-failed` selects and archives failed or
+interrupted attempts; a subsequent `start --resume` executes those queued
+retries. Start never implicitly retries either state. Foreground `run` and
+`resume` remain available with the same source options.
 
 For a legacy v0.2 RPOF profile, every run/start/resume also supplies the original
 `--paid-budget FILE`, absolute `--rpof-executable FILE`, and

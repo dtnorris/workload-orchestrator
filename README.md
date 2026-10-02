@@ -18,6 +18,7 @@ compatibility remain available during migration. WLO provides:
 - sticky terminal states and resumable execution;
 - cross-process filesystem job claims;
 - graceful pause/resume;
+- scoped foreground cancellation of owned child process trees;
 - explicit, audited failed-job retry with preserved attempt evidence;
 - failure circuit breaking;
 - immutable plan/output identity;
@@ -106,6 +107,13 @@ bin/wlo run examples/hello-plan.json \
   --output output/hello-local
 ```
 
+For foreground `run`/`resume`, Ctrl-C stops new dispatch and cancels every
+owned job process group, including descendants, while retaining partial output
+and interrupted-attempt evidence. `wlo pause` is different: it stops new
+dispatch but lets running jobs finish normally. Neither action changes provider
+capacity. See [the operator workflow](docs/operator-workflow.md) for retry and
+signal-boundary details.
+
 Inspect status:
 
 ```bash
@@ -122,11 +130,14 @@ bin/wlo watch examples/hello-plan.json \
 ```
 
 `watch` is read-only. It reads the execution directory, never contacts a
-provider, and exits automatically after `completed` or `workload_failed`.
+provider, and exits automatically after `completed`, `workload_failed`, or
+`interrupted`.
 Ctrl-C stops only the watcher.
 
-A normal rerun or resume skips `complete` and `failed` jobs unless a failed
-job has been explicitly authorized for retry using `retry-failed`.
+A normal rerun or resume skips `complete`, `failed` and `interrupted` jobs.
+Failed or interrupted work must be explicitly authorized with `retry-failed`;
+an execution retaining interrupted attempts fails closed on resume until that
+review is recorded.
 
 ## Pause and resume
 
@@ -161,7 +172,7 @@ bin/wlo resume examples/hello-plan.json \
 Failed jobs remain terminal; acknowledgement only resets the breaker counters
 for still-pending work.
 
-## Retry failed jobs
+## Retry failed or interrupted jobs
 
 After repairing the cause, use `retry-failed` to queue another attempt. First
 pause and wait for the runner to exit with no running jobs. When upgrading an
@@ -178,17 +189,18 @@ bin/wlo retry-failed PLAN.json \
 ```
 
 Supply `--acknowledge-circuit-breaker` only when the breaker is tripped. Instead
-of `--all`, use one or more `--job JOB_ID` options to retry selected failed jobs.
+of `--all`, use one or more `--job JOB_ID` options to retry selected failed or
+interrupted jobs.
 Selection and a nonblank reason are mandatory. Unknown, duplicate, completed,
 running, already-queued, or never-started job selections fail without authorizing
-any retry. `--all` selects only currently failed jobs.
+any retry. `--all` selects only currently failed or interrupted jobs.
 
 The command queues work and leaves the execution paused; it launches no jobs.
 Resume with the original plan, workdir, output, and worker configuration.
 Resume runs all pending work, including previously unstarted jobs. Completed
-jobs and failed jobs not selected for retry remain untouched. Attempt numbers
-increase when a new attempt actually starts. Normal resume alone still does
-not retry failures.
+jobs and failed/interrupted jobs not selected for retry remain untouched.
+Attempt numbers increase when a new attempt actually starts. Normal resume alone still does
+not retry failures or interruptions.
 
 Before authorizing a retry, WLO copies each selected attempt's `metadata.json`,
 `stdout.log`, and `stderr.log` (when present) to

@@ -50,6 +50,7 @@ module WorkloadOrchestrator
                 when "running" then "START"
                 when "complete" then "DONE"
                 when "failed" then row["in_doubt"] ? "IN_DOUBT" : "FAIL"
+                when "interrupted" then "INTERRUPTED"
                 end
         next unless event
 
@@ -62,8 +63,10 @@ module WorkloadOrchestrator
       return if @previous && state["counts"] == @previous["counts"]
 
       counts = state.fetch("counts")
+      interrupted = counts.fetch("interrupted", 0)
+      interrupted_text = interrupted.positive? ? " / #{interrupted} interrupted" : ""
       @out.puts "Progress: #{counts['complete']} complete / #{counts['running']} running / " \
-                "#{counts['pending']} pending / #{counts['failed']} failed " \
+                "#{counts['pending']} pending / #{counts['failed']} failed#{interrupted_text} " \
                 "(#{state['terminal']}/#{state['total']} terminal, #{state['progress_percent']}%)"
     end
 

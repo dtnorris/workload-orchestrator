@@ -4,7 +4,7 @@ require "tmpdir"
 
 module WorkloadOrchestrator
   # Retry authorization is one atomic execution-state write. Until it commits,
-  # all failed jobs stay terminal, even if an archive was already copied.
+  # all failed or interrupted jobs stay terminal, even if an archive was already copied.
   module ExecutionRetry
     def retry_failed!(reason:, all: false, job_ids: [], acknowledge_circuit_breaker: false)
       ensure_prepared!
@@ -37,14 +37,18 @@ module WorkloadOrchestrator
     def retry_selection!(all, job_ids, reason)
       validate_retry_selection!(all, job_ids, reason)
       selected = plan.jobs.select do |job|
-        all ? metadata_for(job)&.fetch("status") == "failed" : job_ids.include?(job.id)
+        all ? retryable?(job) : job_ids.include?(job.id)
       end
-      raise Error, "no failed jobs selected" if selected.empty?
+      raise Error, "no failed or interrupted jobs selected" if selected.empty?
 
       selected.each do |job|
-        raise Error, "job #{job.id} is not failed" unless metadata_for(job)&.fetch("status") == "failed"
+        raise Error, "job #{job.id} is not failed or interrupted" unless retryable?(job)
       end
       selected
+    end
+
+    def retryable?(job)
+      ExecutionStore::RETRYABLE_JOB_STATUSES.include?(metadata_for(job)&.fetch("status", nil))
     end
 
     def validate_retry_breaker!(state, acknowledge)
@@ -68,6 +72,9 @@ module WorkloadOrchestrator
         (state["retry_pending"] ||= {})[row.fetch("job_id")] = row.fetch("attempt")
       end
       reset_breaker!(state.fetch("circuit_breaker")) if acknowledge
+      if selected.any? { |job| metadata_for(job).fetch("status") == "interrupted" } && state["interruption"]
+        (state["interruption_history"] ||= []) << state.delete("interruption")
+      end
       clear_dispatch_halt!(state, selected)
       FileUtils.mkdir_p(control_dir)
       File.write(pause_path, "#{timestamp}\n")

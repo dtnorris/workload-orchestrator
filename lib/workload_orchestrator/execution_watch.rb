@@ -9,7 +9,7 @@ module WorkloadOrchestrator
   class ExecutionWatch
     DEFAULT_INTERVAL_SECONDS = 1.0
     CONSISTENCY_RETRIES = 3
-    TERMINAL_STATUSES = %w[completed workload_failed].freeze
+    TERMINAL_STATUSES = %w[completed workload_failed interrupted].freeze
 
     def initialize(plan:, output:, out: $stdout, interval_seconds: DEFAULT_INTERVAL_SECONDS,
                    sleeper: ->(seconds) { sleep(seconds) }, clock: -> { Time.now.utc })
@@ -322,7 +322,9 @@ module WorkloadOrchestrator
     end
 
     def progress_line(counts)
-      values = %w[complete running pending failed].map { |status| "#{counts.fetch(status)} #{status}" }
+      statuses = %w[complete running pending failed]
+      statuses << "interrupted" if counts.fetch("interrupted", 0).positive?
+      values = statuses.map { |status| "#{counts.fetch(status)} #{status}" }
       "Progress: #{values.join(' / ')}"
     end
 
@@ -342,11 +344,11 @@ module WorkloadOrchestrator
     def print_pools(pools)
       return if pools.empty?
 
-      @out.puts "Pool             Jobs C/R/F/P  Ready  Busy  Idle  State"
+      @out.puts "Pool             Jobs C/R/F/I/P  Ready  Busy  Idle  State"
       pools.each do |pool|
         jobs = pool.fetch("jobs")
         workers = pool.fetch("workers")
-        counts = %w[complete running failed pending].map { |key| jobs.fetch(key) }.join("/")
+        counts = %w[complete running failed interrupted pending].map { |key| jobs.fetch(key) }.join("/")
         @out.puts format(
           "%<pool>-16s %<counts>-13s %<ready>5d %<busy>5d %<idle>5d  %<state>s",
           pool: pool.fetch("pool_id"), counts:, ready: workers.fetch("compatible_ready"),

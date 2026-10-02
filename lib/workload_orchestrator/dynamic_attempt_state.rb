@@ -144,7 +144,7 @@ module WorkloadOrchestrator
                                       classification: classification
                                     })
       write_json(metadata_path(attempt.job), document)
-      record_dynamic_breaker_result!(status, classification)
+      record_dynamic_breaker_result!(status, classification) unless status == "interrupted"
       rebuild_jobs_unlocked
       :recorded
     end

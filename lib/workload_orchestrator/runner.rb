@@ -8,10 +8,10 @@ require_relative "dynamic_scheduler"
 module WorkloadOrchestrator
   class Runner
     attr_reader :plan, :workers, :workdir, :store, :worker_registry_poller,
-                :worker_loss_reconciler, :dynamic_scheduler
+                :worker_loss_reconciler, :dynamic_scheduler, :interrupt_signal
 
     def initialize(plan:, workers:, workdir:, output_dir:, worker_check: WorkerCheck.new, out: $stdout,
-                   command_executor: Open3.method(:capture3), worker_source: nil,
+                   command_executor: nil, worker_source: nil, foreground: true,
                    worker_poll_interval: WorkerRegistryPoller::DEFAULT_INTERVAL_SECONDS,
                    worker_registry_clock: -> { Time.now.utc }, worker_registry_sleeper: nil)
       plan.execution_profile&.ensure_runnable!
@@ -25,7 +25,8 @@ module WorkloadOrchestrator
       )
       @worker_check = worker_check
       @out = out
-      @command_executor = command_executor
+      @command_executor = command_executor || OwnedCommandRunner.new
+      @foreground = foreground
       @worker_poll_interval = worker_poll_interval
       @worker_registry_clock = worker_registry_clock
       @worker_registry_sleeper = worker_registry_sleeper
@@ -52,6 +53,7 @@ module WorkloadOrchestrator
         yield if block_given?
         run_locked(resume, acknowledge_circuit_breaker)
       ensure
+        wait_for_owned_cancellation
         restore_interrupt_handlers
       end
     end
@@ -60,6 +62,9 @@ module WorkloadOrchestrator
 
     def run_locked(resume, acknowledge_circuit_breaker)
       prepare_resume!(resume, acknowledge_circuit_breaker)
+      if !@interrupt_signal && store.counts["interrupted"].positive?
+        raise Error, "interrupted attempts require explicit retry authorization before resume"
+      end
       if dynamic_workers?
         @live_display = LiveExecutionDisplay.new(plan: plan, output: store.output_dir, out: @out)
         @live_display.refresh(resume: resume)
@@ -114,7 +119,11 @@ module WorkloadOrchestrator
         @dynamic_schedule_mutex.synchronize { @live_display.refresh }
       end
       join_dynamic_threads
-      store.record_interruption!(@interrupt_signal) if @interrupt_signal
+      finalize_and_report
+    rescue CommandCancelled
+      join_dynamic_threads
+      store.record_interruption!(@interrupt_signal || "INT")
+      @live_display.refresh
       finalize_and_report
     rescue Error => e
       join_dynamic_threads
@@ -164,6 +173,15 @@ module WorkloadOrchestrator
       )
       stdout, stderr, status = @command_executor.call(environment, *job.argv, chdir: workdir)
       record_dynamic_result(job, attempt, stdout, stderr, status)
+    rescue CommandCancelled => e
+      @dynamic_schedule_mutex.synchronize do
+        store.write_logs(job, e.stdout, e.stderr)
+        store.record_dynamic_terminal!(
+          attempt: attempt, status: "interrupted", exit_status: e.status&.exitstatus,
+          error: e.message, evidence: cancellation_evidence(e)
+        )
+        @live_display.refresh
+      end
     rescue StandardError => e
       @dynamic_schedule_mutex.synchronize do
         store.write_logs(job, "", "#{e.class}: #{e.message}\n")
@@ -305,6 +323,12 @@ module WorkloadOrchestrator
       store.write_logs(job, stdout, stderr)
       terminal = status.success? ? "complete" : "failed"
       store.record_terminal!(job: job, status: terminal, started_at: started_at, exit_status: status.exitstatus)
+    rescue CommandCancelled => e
+      store.write_logs(job, e.stdout, e.stderr)
+      store.record_interrupted!(
+        job: job, started_at: started_at, exit_status: e.status&.exitstatus,
+        term_signal: e.status&.termsig, evidence: cancellation_evidence(e)
+      )
     rescue StandardError => e
       store.write_logs(job, "", "#{e.class}: #{e.message}\n")
       store.record_terminal!(job: job, status: "failed", started_at: started_at, exit_status: nil, error: e.message)
@@ -326,15 +350,21 @@ module WorkloadOrchestrator
     end
 
     def install_interrupt_handlers
-      return unless dynamic_workers? && Thread.current == Thread.main
+      return unless @foreground && Thread.current == Thread.main
 
-      @previous_handlers = %w[INT TERM].to_h do |signal|
-        [signal, Signal.trap(signal) { @interrupt_signal ||= signal }]
-      end
+      @interrupt_reader, @interrupt_writer = IO.pipe
+      @previous_handlers = {
+        "INT" => Signal.trap("INT") { receive_interrupt("INT") },
+        "TERM" => Signal.trap("TERM") { receive_interrupt("TERM") }
+      }
+      @interrupt_supervisor = Thread.new { supervise_interrupts }
     end
 
     def restore_interrupt_handlers
       @previous_handlers&.each { |signal, previous| Signal.trap(signal, previous) }
+      @interrupt_writer&.close unless @interrupt_writer&.closed?
+      @interrupt_supervisor&.join
+      @interrupt_reader&.close unless @interrupt_reader&.closed?
     end
 
     def dynamic_workers?
@@ -344,6 +374,8 @@ module WorkloadOrchestrator
     def reconcile_running_attempts!; end
 
     def finalize_and_report
+      wait_for_owned_cancellation
+      store.record_interruption!(@interrupt_signal) if @interrupt_signal
       status = store.finish!(resource_cleanup_pending: false)
       @live_display&.refresh
       counts = store.counts
@@ -353,7 +385,60 @@ module WorkloadOrchestrator
     end
 
     def format_counts(counts)
-      %w[complete failed running pending].map { |key| "#{key}=#{counts[key]}" }.join(" ")
+      keys = %w[complete failed running pending]
+      keys << "interrupted" if counts["interrupted"].positive?
+      keys.map { |key| "#{key}=#{counts[key]}" }.join(" ")
+    end
+
+    def receive_interrupt(signal)
+      @interrupt_signal ||= signal
+      @interrupt_writer.write_nonblock(".")
+    rescue IO::WaitWritable, IOError, Errno::EPIPE
+      nil
+    end
+
+    def supervise_interrupts
+      handled = 0
+      while @interrupt_reader.read(1)
+        handled += 1
+        force = handled > 1
+        count = cancellation_targets.sum do |target|
+          target.cancel(signal: @interrupt_signal || "INT", force: force)
+        end
+        if force
+          @out.puts "Second Ctrl-C received; force-killing #{count} owned job process(es)."
+        else
+          @out.puts "Cancellation requested; stopping #{count} owned job process(es)."
+        end
+        signal_dynamic_activity
+      end
+    rescue IOError
+      nil
+    end
+
+    def wait_for_owned_cancellation
+      return unless @interrupt_signal
+
+      cancellation_targets.each(&:wait_for_cancellation)
+    end
+
+    def cancellation_targets
+      [@command_executor, @worker_source].compact.select do |target|
+        target.respond_to?(:cancel) && target.respond_to?(:wait_for_cancellation)
+      end.uniq
+    end
+
+    def cancellation_evidence(error)
+      {
+        "kind" => "foreground_cancellation",
+        "signal" => error.signal,
+        "requested_at" => error.requested_at,
+        "termination_mode" => error.termination_mode,
+        "exit_status" => error.status&.exitstatus,
+        "term_signal" => error.status&.termsig,
+        "pid" => error.pid,
+        "process_group_id" => error.process_group_id
+      }
     end
 
     def validate_workdir!
