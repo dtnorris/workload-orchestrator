@@ -126,7 +126,8 @@ ten running and ten failed jobs; JSON retains all jobs.
 
 Plain `status` retains its JSON default and existing fields. Additive fields
 include `counts`, `total`, `terminal`, `progress_percent`, `executor_active` and
-`manager`. Reporting only reads state and briefly probes the existing lock;
+`manager`. `pool_status` adds per-pool job counts, compatible READY/busy/idle
+worker counts, state, and deterministic reason. Reporting only reads state and briefly probes the existing lock;
 it neither repairs stale records nor authorizes retries. State/job files are
 individually atomic snapshots, so a live report may straddle a job transition.
 The recorded PID identifies a past launch; it alone does not prove liveness.

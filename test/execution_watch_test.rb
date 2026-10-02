@@ -125,13 +125,13 @@ class ExecutionWatchTest < Minitest::Test
 
     waiting = watch(plan).snapshot
     assert waiting.fetch("waiting_for_capacity")
-    assert_equal "Waiting for compatible capacity", waiting.fetch("display_state")
+    assert_equal "Waiting: ready workers incompatible", waiting.fetch("display_state")
 
     poller.poll_once
     available = watch(plan).snapshot
     refute available.fetch("waiting_for_capacity")
     assert_equal "capacity_available", available.fetch("capacity_evaluation")
-    assert_equal "Running", available.fetch("display_state")
+    assert_equal "Ready to dispatch", available.fetch("display_state")
   end
 
   def test_worker_loss_halt_is_distinct_from_waiting
@@ -219,7 +219,7 @@ class ExecutionWatchTest < Minitest::Test
 
     refute document.dig("worker_registry", "available")
     assert_empty document.dig("worker_registry", "workers")
-    assert_equal "Waiting for first accepted worker checkpoint", document.fetch("display_state")
+    assert_equal "Waiting: no accepted registry snapshot", document.fetch("display_state")
   end
 
   def test_refresh_skips_a_transient_cross_file_state

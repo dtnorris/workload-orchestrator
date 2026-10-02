@@ -2,9 +2,10 @@
 
 module WorkloadOrchestrator
   class ExecutionReport
-    def initialize(plan:, output:)
+    def initialize(plan:, output:, clock: -> { Time.now.utc })
       @plan = plan
       @root = File.expand_path(output)
+      @clock = clock
     end
 
     def document
@@ -16,17 +17,12 @@ module WorkloadOrchestrator
       jobs = read_json("jobs.json").fetch("jobs")
       counts = job_counts(jobs)
       terminal = counts.fetch("complete") + counts.fetch("failed")
-      state.merge(
-        "paused" => File.file?(File.join(@root, "control", "pause")), "jobs" => jobs,
-        "counts" => counts, "total" => jobs.length, "terminal" => terminal,
-        "progress_percent" => jobs.empty? ? 100.0 : (100.0 * terminal / jobs.length).round(1),
-        "executor_active" => executor_active?, "manager" => manager_record
-      ).tap do |report|
-        if %w[running cleanup_pending].include?(report["status"]) && !report["executor_active"] && rpof_execution?
-          report["status"] = "owner_crashed"
-          report["resource_disposition"] ||= { "phase" => "guardian_pending", "detail" => "owner vanished; inspect the original RPOF budget" }
-        end
-      end
+      report = report_document(state, jobs, counts, terminal)
+      apply_owner_crash!(report)
+      report["pool_status"] = ExecutionPoolStatus.new(
+        plan: @plan, output: @root, clock: @clock
+      ).document(report)
+      report
     rescue SystemCallError, JSON::ParserError, KeyError => e
       raise Error, "cannot read execution status: #{e.message}"
     end
@@ -39,6 +35,7 @@ module WorkloadOrchestrator
       out.puts "Jobs: #{state.fetch('counts').map { |key, value| "#{key}=#{value}" }.join(' ')}"
       out.puts "Resources: #{state.dig('resource_disposition', 'phase')}" if state["resource_disposition"]
       print_controls(out, state)
+      print_pools(out, state.fetch("pool_status"))
       print_timing(out, state)
       print_jobs(out, state.fetch("jobs"), state["executor_active"])
       print_manager(out, state["manager"])
@@ -46,6 +43,26 @@ module WorkloadOrchestrator
     end
 
     private
+
+    def report_document(state, jobs, counts, terminal)
+      state.merge(
+        "paused" => File.file?(File.join(@root, "control", "pause")), "jobs" => jobs,
+        "counts" => counts, "total" => jobs.length, "terminal" => terminal,
+        "progress_percent" => jobs.empty? ? 100.0 : (100.0 * terminal / jobs.length).round(1),
+        "executor_active" => executor_active?, "manager" => manager_record
+      )
+    end
+
+    def apply_owner_crash!(report)
+      active_without_owner = %w[running cleanup_pending].include?(report["status"]) && !report["executor_active"]
+      return unless active_without_owner && rpof_execution?
+
+      report["status"] = "owner_crashed"
+      report["resource_disposition"] ||= {
+        "phase" => "guardian_pending",
+        "detail" => "owner vanished; inspect the original RPOF budget"
+      }
+    end
 
     def rpof_execution?
       path = File.join(@root, "execution-profile.json")
@@ -63,6 +80,30 @@ module WorkloadOrchestrator
       out.puts "Pause: requested (draining active jobs)" if state["paused"] && state["executor_active"]
       out.puts "Pause: requested" if state["paused"] && !state["executor_active"]
       out.puts "Breaker: #{state.dig('circuit_breaker', 'reason')}" if state.dig("circuit_breaker", "tripped")
+    end
+
+    def print_pools(out, pools)
+      return if pools.empty?
+
+      out.puts "Pools:"
+      out.puts "  Pool             Jobs C/R/F/P  Ready  Busy  Idle  State"
+      pools.each do |pool|
+        jobs = pool.fetch("jobs")
+        workers = pool.fetch("workers")
+        counts = %w[complete running failed pending].map { |key| jobs.fetch(key) }.join("/")
+        out.puts format(
+          "  %<pool>-16s %<counts>-13s %<ready>5d %<busy>5d %<idle>5d  %<state>s",
+          pool: pool.fetch("pool_id"), counts:, ready: workers.fetch("compatible_ready"),
+          busy: workers.fetch("busy"), idle: workers.fetch("idle"), state: human_pool_state(pool)
+        )
+      end
+    end
+
+    def human_pool_state(pool)
+      reason = pool.fetch("reason")
+      return reason if %w[RUNNING READY_TO_DISPATCH COMPLETE FAILED].include?(reason)
+
+      "#{pool.fetch('state')}: #{reason.downcase.tr('_', ' ')}"
     end
 
     def read_json(name)

@@ -11,17 +11,6 @@ module WorkloadOrchestrator
     CONSISTENCY_RETRIES = 3
     TERMINAL_STATUSES = %w[completed workload_failed].freeze
 
-    class ReadOnlyStore
-      def initialize(metadata)
-        @metadata = metadata
-      end
-
-      def metadata_for(job)
-        @metadata.fetch(job.id)
-      end
-    end
-    private_constant :ReadOnlyStore
-
     def initialize(plan:, output:, out: $stdout, interval_seconds: DEFAULT_INTERVAL_SECONDS,
                    sleeper: ->(seconds) { sleep(seconds) }, clock: -> { Time.now.utc })
       @plan = plan
@@ -33,7 +22,7 @@ module WorkloadOrchestrator
       @sleeper = sleeper
       @clock = clock
       @tty = out.respond_to?(:tty?) && out.tty?
-      @report = ExecutionReport.new(plan: plan, output: output)
+      @report = ExecutionReport.new(plan: plan, output: output, clock: @clock)
     rescue ArgumentError, TypeError
       raise Error, "watch interval must be a positive number"
     end
@@ -61,11 +50,11 @@ module WorkloadOrchestrator
       CONSISTENCY_RETRIES.times do
         before = @report.document
         checkpoint = read_checkpoint
-        attempts, metadata = running_attempts(before)
+        attempts = running_attempts(before)
         after = @report.document
         next unless stable_report?(before, after)
 
-        return build_snapshot(after, checkpoint, attempts, metadata)
+        return build_snapshot(after, checkpoint, attempts)
       rescue TransientRead
         next
       end
@@ -79,6 +68,7 @@ module WorkloadOrchestrator
       @out.puts progress_line(document.fetch("counts"))
       @out.puts "Terminal: #{document.fetch('terminal')} / #{document.fetch('total')} " \
                 "(#{document.fetch('progress_percent')}%)"
+      print_pools(document.fetch("pool_status"))
       print_registry(document.fetch("worker_registry"))
       print_attempts(document.fetch("running_attempts"))
       print_workers(document.fetch("worker_registry"))
@@ -91,9 +81,9 @@ module WorkloadOrchestrator
     class TransientRead < StandardError; end
     private_constant :TransientRead
 
-    def build_snapshot(report, checkpoint, attempts, metadata)
+    def build_snapshot(report, checkpoint, attempts)
       registry = worker_registry(checkpoint, attempts)
-      waiting = waiting_state(report, registry, metadata, checkpoint)
+      waiting = waiting_state(report)
       report.merge(
         "display_state" => display_state(report, waiting),
         "waiting_for_capacity" => waiting == :waiting,
@@ -104,15 +94,10 @@ module WorkloadOrchestrator
     end
 
     def running_attempts(report)
-      metadata = report.fetch("jobs").to_h do |row|
-        [row.fetch("job_id"), row.fetch("status") == "pending" ? nil : { "status" => row.fetch("status") }]
-      end
-      attempts = report.fetch("jobs").select { |row| row.fetch("status") == "running" }.map do |row|
+      report.fetch("jobs").select { |row| row.fetch("status") == "running" }.map do |row|
         document = read_running_metadata(row)
-        metadata[row.fetch("job_id")] = document
         attempt_row(row, document)
       end
-      [attempts, metadata]
     end
 
     def read_running_metadata(row)
@@ -266,32 +251,6 @@ module WorkloadOrchestrator
       end
     end
 
-    def registry_workers(checkpoint)
-      checkpoint.fetch("workers").filter_map do |worker|
-        next unless worker["worker_snapshot"]
-
-        snapshot = worker.fetch("worker_snapshot")
-        RegistryWorker.new(
-          registry: {
-            registry_id: checkpoint.fetch("registry_id"),
-            revision: checkpoint.fetch("revision"),
-            published_at: Time.iso8601(checkpoint.fetch("published_at")),
-            expires_at: Time.iso8601(checkpoint.fetch("expires_at")),
-            sha256: checkpoint.fetch("snapshot_sha256")
-          }.freeze,
-          record: {
-            "worker_id" => worker.fetch("worker_id"),
-            "generation_id" => worker.fetch("generation_id"),
-            "endpoint" => worker.fetch("endpoint"),
-            "state" => worker.fetch("state"),
-            "labels" => snapshot.fetch("labels"),
-            "capabilities" => snapshot.fetch("capabilities"),
-            "capability_fingerprint" => worker.fetch("capability_fingerprint")
-          }.freeze
-        )
-      end
-    end
-
     def worker_counts(workers)
       states = DynamicWorkerRegistry::STATES.to_h do |state|
         [state, workers.count { |worker| worker.fetch("state") == state }]
@@ -308,42 +267,43 @@ module WorkloadOrchestrator
       DynamicWorkerRegistry::STATES.to_h { |state| [state, 0] }.merge("busy" => 0, "idle_ready" => 0)
     end
 
-    def waiting_state(report, registry, metadata, checkpoint)
+    def waiting_state(report)
       return :not_applicable unless report.dig("counts", "pending").positive?
-      return :checkpoint_absent unless registry.fetch("available")
-      return :capabilities_unavailable unless registry.fetch("capabilities_available")
-      return :not_applicable unless @plan.priority_scheduling?
 
-      scheduler = DynamicScheduler.new(plan: @plan, store: ReadOnlyStore.new(metadata))
-      workers = registry_workers(checkpoint)
-      scheduler.assignments(workers: workers, current_workers: workers).empty? ? :waiting : :capacity_available
-    rescue Error => e
-      return :reconciliation_pending if e.message.include?("absent or replaced")
+      reasons = report.fetch("pool_status").map { |pool| pool.fetch("reason") }
+      return :waiting if reasons.intersect?(ExecutionPoolStatus::CAPACITY_WAIT_REASONS)
+      return :capacity_available if reasons.include?("READY_TO_DISPATCH")
+      return :no_runnable_work if reasons.include?("NO_RUNNABLE_WORK")
 
-      raise
+      :not_applicable
     end
 
     def display_state(report, waiting)
+      terminal_labels = { "completed" => "Completed", "workload_failed" => "Workload failed" }
+      return terminal_labels.fetch(report.fetch("status")) if terminal_labels.key?(report.fetch("status"))
       return "Paused" if report.fetch("paused")
+      return "Circuit breaker tripped: #{report.dig('circuit_breaker', 'reason')}" if
+        report.dig("circuit_breaker", "tripped")
 
       if report["dispatch_halt"]
         halt = report.fetch("dispatch_halt")
         return "Dispatch halted (#{halt.fetch('kind')}): #{halt.fetch('error')}"
       end
-      return "Circuit breaker tripped: #{report.dig('circuit_breaker', 'reason')}" if
-        report.dig("circuit_breaker", "tripped")
 
       labels = {
         "interrupted" => "Interrupted", "infrastructure_failed" => "Infrastructure failed",
-        "completed" => "Completed", "workload_failed" => "Workload failed",
         "cleanup_pending" => "Cleanup pending", "cleanup_failed" => "Cleanup failed",
         "owner_crashed" => "Owner crashed"
       }
       return labels.fetch(report.fetch("status")) if labels.key?(report.fetch("status"))
-      return "Waiting for compatible capacity" if waiting == :waiting
-      return "Waiting for first accepted worker checkpoint" if waiting == :checkpoint_absent
-      return "Worker reconciliation pending" if waiting == :reconciliation_pending
-      return "Capacity eligibility unavailable (legacy checkpoint)" if waiting == :capabilities_unavailable
+
+      pool_reasons = report.fetch("pool_status").map { |pool| pool.fetch("reason") }
+      if waiting == :waiting
+        reason = pool_reasons.find { |candidate| ExecutionPoolStatus::CAPACITY_WAIT_REASONS.include?(candidate) }
+        return "Waiting: #{reason.downcase.tr('_', ' ')}"
+      end
+      return "Ready to dispatch" if waiting == :capacity_available
+      return "Waiting: no runnable work" if waiting == :no_runnable_work
 
       "Running"
     end
@@ -377,6 +337,22 @@ module WorkloadOrchestrator
                 "UNAVAILABLE=#{counts.fetch('UNAVAILABLE')} busy=#{counts.fetch('busy')} " \
                 "idle-ready=#{counts.fetch('idle_ready')}"
       @out.puts "Registry: #{registry.fetch('registry_id')} revision=#{registry.fetch('revision')}"
+    end
+
+    def print_pools(pools)
+      return if pools.empty?
+
+      @out.puts "Pool             Jobs C/R/F/P  Ready  Busy  Idle  State"
+      pools.each do |pool|
+        jobs = pool.fetch("jobs")
+        workers = pool.fetch("workers")
+        counts = %w[complete running failed pending].map { |key| jobs.fetch(key) }.join("/")
+        @out.puts format(
+          "%<pool>-16s %<counts>-13s %<ready>5d %<busy>5d %<idle>5d  %<state>s",
+          pool: pool.fetch("pool_id"), counts:, ready: workers.fetch("compatible_ready"),
+          busy: workers.fetch("busy"), idle: workers.fetch("idle"), state: pool.fetch("reason")
+        )
+      end
     end
 
     def print_attempts(attempts)

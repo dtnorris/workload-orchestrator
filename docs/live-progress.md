@@ -30,11 +30,22 @@ Worker detail updates print changed rows, bounded to ten; initial running
 annotations are also bounded to ten. An unchanged poll, including a newer
 revision with the same availability, adds no output.
 
-`WAIT Waiting for compatible capacity` is derived from pending jobs and zero
-eligible idle READY workers, accounting for capability matching, explicit job
-dependencies, and pool concurrency limits. Active attempts can continue while
-other jobs await capacity. This message does not write a new execution status.
-Capacity returning produces an `ACTIVE` message or new job lifecycle events.
+`status`, `summary`, and `watch` expose additive per-pool status derived from the
+last accepted registry checkpoint and WLO's execution evidence. `compatible`
+means an exact pool capability match; `busy` means that exact worker generation
+is bound to a running attempt; `idle` means a compatible READY generation has no
+running binding. WLO never infers provider-resource state.
+
+Pool reasons use deterministic precedence: terminal pool state; pause; circuit
+breaker; dispatch/registry halt; running work; runnable idle capacity; busy
+compatible capacity; then absent, NOT_READY, or incompatible capacity. Pending
+jobs blocked only by dependencies use `NO_RUNNABLE_WORK`, not a capacity reason.
+The complete reason set is `RUNNING`, `READY_TO_DISPATCH`,
+`NO_COMPATIBLE_READY_WORKERS`, `ALL_COMPATIBLE_WORKERS_BUSY`,
+`WORKERS_NOT_READY`, `READY_WORKERS_INCOMPATIBLE`, `PAUSED`,
+`CIRCUIT_BREAKER`, `DISPATCH_HALTED`, `NO_ACCEPTED_REGISTRY_SNAPSHOT`,
+`REGISTRY_INVALID_OR_STALE`, `COMPLETE`, `FAILED`, `NO_PENDING_WORK`, and
+`NO_RUNNABLE_WORK`.
 
 Pause/drain, interruption, breaker, and dispatch-halt messages take precedence
 over capacity waiting. A worker-loss halt includes its durable reason and the
