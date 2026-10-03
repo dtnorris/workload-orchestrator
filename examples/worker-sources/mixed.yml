@@ -5,6 +5,7 @@ sources:
     args:
       - workers
       - --json
+    environment: {}
     workdir: /absolute/path/to/local-ollama-workers
   - name: remote
     command: /absolute/path/to/runpod-ollama-fleet/bin/rpof

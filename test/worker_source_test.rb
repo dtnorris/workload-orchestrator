@@ -6,6 +6,7 @@ class WorkerSourceTest < Minitest::Test
   include WloTestSupport
 
   CONTRACT_ROOT = File.expand_path("../contracts/dynamic-worker-registry/v0.1", __dir__)
+  EXAMPLE_SOURCE_ROOT = File.expand_path("../examples/worker-sources", __dir__)
   FIXTURE = File.join(CONTRACT_ROOT, "minimal-valid.json")
   INVALID_ROOT = File.join(CONTRACT_ROOT, "invalid")
   NOW = Time.iso8601("2030-01-01T00:01:00Z")
@@ -151,6 +152,24 @@ class WorkerSourceTest < Minitest::Test
     assert_equal first.sha256, second.sha256
     assert_same static_source.latest_snapshot, static_source.latest_snapshot
     assert static_source.latest_snapshot.frozen?
+  end
+
+  def test_checked_in_worker_source_examples_load
+    expected_source_counts = {
+      "local-only.yml" => 1,
+      "remote-only.yml" => 1,
+      "mixed.yml" => 2
+    }
+
+    File.stub(:directory?, true) do
+      expected_source_counts.each do |filename, expected_count|
+        source_set = WorkloadOrchestrator::WorkerSourceConfiguration.load(
+          File.join(EXAMPLE_SOURCE_ROOT, filename)
+        )
+
+        assert_equal expected_count, source_set.entries.length, filename
+      end
+    end
   end
 
   def test_command_source_executes_argv_without_a_shell_and_preserves_stdout_bytes
