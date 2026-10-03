@@ -171,12 +171,137 @@ class RetryTest < Minitest::Test
     store.acknowledge_circuit_breaker!
     assert_equal 1, retry_cli("--all", "--acknowledge-circuit-breaker").first
     assert_equal 0, retry_cli("--all").first
-    assert_equal 1, retry_cli("--all").first
+    assert_equal 0, retry_cli("--all").first
+    assert_equal 1, state.fetch("retry_history").length
     code, out, = cli("status", @plan_path, "--output", @output)
     assert_equal 0, code
     rows = JSON.parse(out).fetch("jobs")
     assert_equal "pending", rows[1].fetch("status")
     assert_equal 1, rows[1].fetch("attempt")
+  end
+
+  def test_dry_run_previews_exact_evidence_without_mutation
+    runner.run
+    before = retained_files
+
+    code, out, err = retry_cli(
+      "--job", "bad-1", "--acknowledge-circuit-breaker", "--dry-run", "--json"
+    )
+
+    assert_equal 0, code, err
+    result = JSON.parse(out)
+    assert_equal "preview", result.fetch("result")
+    assert result.fetch("dry_run")
+    assert_equal "failed", result.dig("jobs", 0, "prior_status")
+    assert_equal 1, result.dig("jobs", 0, "prior_attempt")
+    assert_match(/\A[0-9a-f]{64}\z/, result.dig("jobs", 0, "evidence_sha256"))
+    assert_equal before, retained_files
+    refute File.exist?(File.join(@output, "attempts"))
+  end
+
+  def test_recovery_history_is_durable_hashed_and_idempotent
+    runner.run
+    first_code, first_out, first_err = retry_cli(
+      "--job", "bad-1", "--acknowledge-circuit-breaker", "--json"
+    )
+    assert_equal 0, first_code, first_err
+    first = JSON.parse(first_out)
+    archived = File.join(@output, first.dig("jobs", 0, "archive"))
+    assert_equal first.dig("jobs", 0, "evidence_sha256"), store.send(:evidence_sha256, archived)
+
+    second_code, second_out, second_err = retry_cli(
+      "--job", "bad-1", "--acknowledge-circuit-breaker", "--json"
+    )
+    assert_equal 0, second_code, second_err
+    second = JSON.parse(second_out)
+    assert second.fetch("idempotent")
+    assert_equal first.fetch("action_id"), second.fetch("action_id")
+
+    code, out, err = cli(
+      "recovery", @plan_path, "--workdir", @workdir, "--output", @output, "--json"
+    )
+    assert_equal 0, code, err
+    history = JSON.parse(out)
+    assert_equal WorkloadOrchestrator::ExecutionRetry::RECOVERY_HISTORY_CONTRACT_VERSION,
+                 history.fetch("contract_version")
+    assert_equal [first.fetch("action_id")], history.fetch("actions").map { |row| row.fetch("action_id") }
+    assert_equal 1, state.fetch("retry_history").length
+
+    error = assert_raises(WorkloadOrchestrator::Error) do
+      store.authorize_retry!(reason: "different review", job_ids: ["bad-1"])
+    end
+    assert_includes error.message, "retry already queued"
+    assert_equal 1, state.fetch("retry_history").length
+  end
+
+  def test_nested_retained_evidence_is_hashed_and_archived_byte_identically
+    runner.run
+    nested = File.join(@output, "runs", "bad-1", "provider-attempt-1", "nested")
+    FileUtils.mkdir_p(nested)
+    File.binwrite(File.join(nested, "response.bin"), "\x00retained\xff".b)
+
+    action = store.authorize_retry!(
+      reason: "reviewed nested evidence", job_ids: ["bad-1"], acknowledge_circuit_breaker: true
+    )
+
+    archive = File.join(@output, action.dig("jobs", 0, "archive"))
+    assert_equal "\x00retained\xff".b, File.binread(File.join(archive, "provider-attempt-1", "nested", "response.bin"))
+    assert_equal action.dig("jobs", 0, "evidence_sha256"), store.send(:evidence_sha256, archive)
+  end
+
+  def test_library_recovery_validation_rejects_blank_reasons_and_invalid_metadata
+    runner.run
+    before = retained_files
+
+    assert_raises(WorkloadOrchestrator::Error) do
+      store.authorize_retry!(reason: " ", all: true, acknowledge_circuit_breaker: true)
+    end
+    assert_raises(WorkloadOrchestrator::Error) { store.repair!(reason: " ", dry_run: true) }
+    assert_equal before, retained_files
+
+    metadata_path = File.join(@output, "runs", "bad-1", "metadata.json")
+    metadata = JSON.parse(File.read(metadata_path)).merge("status" => "unknown")
+    File.write(metadata_path, JSON.pretty_generate(metadata))
+    error = assert_raises(WorkloadOrchestrator::Error) do
+      store.send(:raw_metadata_for, @plan.jobs[1])
+    end
+    assert_includes error.message, "invalid job status"
+    refute File.exist?(File.join(@output, "attempts"))
+    refute state.key?("retry_history")
+  end
+
+  def test_repair_is_preview_only_and_unsupported_mutation_fails_closed
+    runner.run
+    before = retained_files
+    args = ["repair", @plan_path, "--workdir", @workdir, "--output", @output,
+            "--reason", "reviewed retained bookkeeping"]
+
+    code, out, err = cli(*args, "--dry-run", "--json")
+    assert_equal 0, code, err
+    assert_equal "unsupported", JSON.parse(out).fetch("result")
+    assert_equal before, retained_files
+
+    code, _out, err = cli(*args)
+    assert_equal 1, code
+    assert_includes err, "no deterministic retained-state repair is supported"
+    assert_equal before, retained_files
+  end
+
+  def test_repair_refuses_plan_drift_before_considering_bookkeeping
+    runner.run
+    before = retained_files
+    changed = JSON.parse(File.read(@plan_path))
+    changed.fetch("jobs").last.fetch("argv")[-1] = "changed"
+    File.write(@plan_path, JSON.pretty_generate(changed))
+
+    code, _out, err = cli(
+      "repair", @plan_path, "--workdir", @workdir, "--output", @output,
+      "--reason", "attempted deterministic repair", "--dry-run"
+    )
+
+    assert_equal 1, code
+    assert_includes err, "different execution identity"
+    assert_equal before, retained_files
   end
 
   private
@@ -204,6 +329,12 @@ class RetryTest < Minitest::Test
   def retry_cli(*)
     cli("retry-failed", @plan_path, "--workdir", @workdir, "--output", @output,
         "--reason", "repaired cause", *)
+  end
+
+  def retained_files
+    Dir.glob(File.join(@output, "**", "*"), File::FNM_DOTMATCH)
+       .select { |path| File.file?(path) }
+       .to_h { |path| [path.delete_prefix("#{@output}/"), File.binread(path)] }
   end
 
   def cli(*args)

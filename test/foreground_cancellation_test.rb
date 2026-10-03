@@ -122,7 +122,15 @@ class ForegroundCancellationTest < Minitest::Test
 
     File.write(work_path("release"), "yes")
     store = store_for(plan)
+    interrupted_evidence = %w[metadata.json stdout.log stderr.log].to_h do |name|
+      [name, File.binread(run_path("first", name))]
+    end
     assert_equal %w[first second], store.retry_failed!(all: true, reason: "operator reviewed cancellation")
+    archived = interrupted_evidence.keys.to_h do |name|
+      [name, File.binread(File.join(@output, "attempts/first/attempt-1", name))]
+    end
+    assert_equal interrupted_evidence, archived
+    assert execution_state.dig("retry_history", 0, "jobs", 0, "side_effects_uncertain")
     assert_equal "completed", runner_for(plan).run(resume: true)
     assert_equal %w[complete complete complete], plan.jobs.map { |entry| job_status(entry) }
     assert_equal [2, 2, 1], plan.jobs.map { |entry| metadata_for(entry.id).fetch("attempt") }

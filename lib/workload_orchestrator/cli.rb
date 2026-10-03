@@ -20,10 +20,12 @@ module WorkloadOrchestrator
       doctor, logs   ONE-SHOT INSPECTION. Interrupting the request changes no lifecycle state.
       pause          CONTROL REQUEST. Stops new WLO dispatch and lets already-running work
                      finish under the existing pause contract; it is not provider teardown.
+      recovery      ONE-SHOT INSPECTION. Reads the bounded recovery history only.
       retry-failed,
+      repair,
       import-terminal CONTROL REQUEST. Changes retained WLO execution evidence/state only;
-                      retry-failed authorizes reviewed failed/interrupted attempts; neither
-                      command starts execution or changes provider capacity.
+                      retry-failed authorizes reviewed failed/interrupted attempts; repair
+                      currently fails closed; none starts execution or changes provider capacity.
       validate, plan,
       worker-check   ONE-SHOT INSPECTION. No workload or provider lifecycle is owned.
 
@@ -66,6 +68,8 @@ module WorkloadOrchestrator
       when "run" then run_command(resume: false)
       when "resume" then run_command(resume: true)
       when "retry-failed" then retry_failed_command
+      when "recovery" then recovery_command
+      when "repair" then repair_command
       when "import-terminal" then import_terminal_command
       when "status", "summary", "watch" then reporting_command(command)
       when "doctor" then doctor_command
@@ -275,22 +279,62 @@ module WorkloadOrchestrator
       options = parse_retry_options
       reject_extra_arguments!
       plan = load_bound_plan(plan_path, options)
-      workers_sha256 = nil
-      if plan.logical?
-        workers = load_workers_for_plan(options, plan)
-        workers.validate_plan!(plan)
-        workers_sha256 = workers.execution_sha256(plan)
-      end
-      store = ExecutionStore.new(
-        plan: plan, workdir: require_workdir(options), output_dir: options.fetch(:output),
-        workers_sha256: workers_sha256
-      )
-      selected = store.retry_failed!(
+      result = recovery_store(plan, options).authorize_retry!(
         all: options.fetch(:all), job_ids: options.fetch(:jobs), reason: options.fetch(:reason),
-        acknowledge_circuit_breaker: options.fetch(:acknowledge)
+        acknowledge_circuit_breaker: options.fetch(:acknowledge), dry_run: options.fetch(:dry_run)
       )
-      @out.puts "Retry queued: #{selected.join(', ')}"
-      @out.puts "Execution remains paused. Resume the same plan, workdir and output to run pending jobs."
+      return print_recovery_json(result) if options.fetch(:json)
+
+      label = result.fetch("dry_run") ? "Retry preview" : "Retry queued"
+      label = "Retry already queued" if result.fetch("idempotent", false)
+      @out.puts "#{label}: #{result.fetch('jobs').map { |row| row.fetch('job_id') }.join(', ')}"
+      result.fetch("jobs").each do |row|
+        @out.puts "  #{row.fetch('job_id')} status=#{row.fetch('prior_status')} " \
+                  "attempt=#{row.fetch('prior_attempt')} evidence=#{row.fetch('evidence_sha256')} " \
+                  "archive=#{row.fetch('archive')}"
+      end
+      if result.fetch("dry_run")
+        @out.puts "Dry run: retained execution state and attempt evidence were not changed."
+      else
+        @out.puts "Execution remains paused. Resume the same plan, workdir and output to run pending jobs."
+      end
+      0
+    end
+
+    def recovery_command
+      plan_path = required_argument!("PLAN.json")
+      options = parse_recovery_options
+      reject_extra_arguments!
+      result = recovery_store(load_bound_plan(plan_path, options), options).recovery_history
+      return print_recovery_json(result) if options.fetch(:json)
+
+      @out.puts "Recovery actions: #{result.fetch('total_actions')}"
+      @out.puts "Showing latest #{result.fetch('actions').length}." if result.fetch("truncated")
+      result.fetch("actions").each do |row|
+        jobs = row.fetch("jobs").map { |job| job.fetch("job_id") }.join(", ")
+        @out.puts "#{row.fetch('action_id')} #{row.fetch('action')} #{row.fetch('result')} jobs=#{jobs}"
+        @out.puts "  reason=#{row.fetch('reason')} at=#{row.fetch('requested_at', row['at'])}"
+      end
+      @out.puts "Repair: unsupported; unsafe retained-state defects fail closed."
+      0
+    end
+
+    def repair_command
+      plan_path = required_argument!("PLAN.json")
+      options = parse_recovery_options(reason: true, dry_run: true)
+      reject_extra_arguments!
+      result = recovery_store(load_bound_plan(plan_path, options), options).repair!(
+        reason: options.fetch(:reason), dry_run: options.fetch(:dry_run)
+      )
+      return print_recovery_json(result) if options.fetch(:json)
+
+      @out.puts "Repair preview: #{result.fetch('detail')}"
+      @out.puts "Retained execution state and attempt evidence were not changed."
+      0
+    end
+
+    def print_recovery_json(result)
+      @out.puts JSON.pretty_generate(result)
       0
     end
 
@@ -327,7 +371,7 @@ module WorkloadOrchestrator
     end
 
     def parse_retry_options
-      options = { all: false, jobs: [], reason: nil, acknowledge: false }
+      options = { all: false, jobs: [], reason: nil, acknowledge: false, dry_run: false, json: false }
       OptionParser.new do |opts|
         opts.on("--workers-config FILE") { |value| options[:workers_config] = value }
         opts.on("--execution-profile FILE") { |value| options[:execution_profile] = value }
@@ -337,11 +381,44 @@ module WorkloadOrchestrator
         opts.on("--job ID") { |value| options[:jobs] << value }
         opts.on("--reason TEXT") { |value| options[:reason] = value }
         opts.on("--acknowledge-circuit-breaker") { options[:acknowledge] = true }
+        opts.on("--dry-run") { options[:dry_run] = true }
+        opts.on("--json") { options[:json] = true }
       end.parse!(@argv)
       %i[workdir output reason].each do |key|
         raise OptionParser::MissingArgument, "--#{key}" if options[key].to_s.strip.empty?
       end
       options
+    end
+
+    def parse_recovery_options(reason: false, dry_run: false)
+      options = { reason: nil, dry_run: false, json: false }
+      OptionParser.new do |opts|
+        opts.on("--workers-config FILE") { |value| options[:workers_config] = value }
+        opts.on("--execution-profile FILE") { |value| options[:execution_profile] = value }
+        opts.on("--workdir DIR") { |value| options[:workdir] = value }
+        opts.on("--output DIR") { |value| options[:output] = value }
+        opts.on("--reason TEXT") { |value| options[:reason] = value } if reason
+        opts.on("--dry-run") { options[:dry_run] = true } if dry_run
+        opts.on("--json") { options[:json] = true }
+      end.parse!(@argv)
+      %i[workdir output].each do |key|
+        raise OptionParser::MissingArgument, "--#{key}" if options[key].to_s.strip.empty?
+      end
+      raise OptionParser::MissingArgument, "--reason" if reason && options[:reason].to_s.strip.empty?
+
+      options
+    end
+
+    def recovery_store(plan, options)
+      workers_sha256 = nil
+      if plan.logical?
+        workers = load_workers_for_plan(options, plan)
+        workers.validate_plan!(plan)
+        workers_sha256 = workers.execution_sha256(plan)
+      end
+      ExecutionStore.new(
+        plan:, workdir: require_workdir(options), output_dir: options.fetch(:output), workers_sha256:
+      )
     end
 
     def pause_command
@@ -497,7 +574,9 @@ module WorkloadOrchestrator
                          [--execution-profile FILE]
                          [--worker-source-command FILE [--worker-source-arg ARG ...]]
           bin/wlo retry-failed PLAN.json --workdir DIR --output DIR (--all | --job ID ...) --reason TEXT
-                               [--acknowledge-circuit-breaker]
+                               [--acknowledge-circuit-breaker] [--dry-run] [--json]
+          bin/wlo recovery PLAN.json --workdir DIR --output DIR [--json]
+          bin/wlo repair PLAN.json --workdir DIR --output DIR --reason TEXT [--dry-run] [--json]
           bin/wlo import-terminal PLAN.json HANDOFF.json --workdir DIR --output DIR
                                   [--workers-config FILE] [--execution-profile FILE]
           bin/wlo --version

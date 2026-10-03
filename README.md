@@ -192,8 +192,21 @@ Supply `--acknowledge-circuit-breaker` only when the breaker is tripped. Instead
 of `--all`, use one or more `--job JOB_ID` options to retry selected failed or
 interrupted jobs.
 Selection and a nonblank reason are mandatory. Unknown, duplicate, completed,
-running, already-queued, or never-started job selections fail without authorizing
-any retry. `--all` selects only currently failed or interrupted jobs.
+running, conflicting already-queued, or never-started job selections fail without
+authorizing any retry. Repeating the exact same queued authorization returns its
+existing action without adding history. `--all` selects only currently failed or
+interrupted jobs.
+
+Preview exact selection, evidence hashes, archive paths, and breaker state without
+mutation by adding `--dry-run --json`. Inspect the durable bounded history with:
+
+```bash
+bin/wlo recovery PLAN.json --workdir WORKDIR --output OUTPUT
+```
+
+WLO currently has no deterministic retained-metadata repair transformation.
+`wlo repair ... --dry-run` reports that boundary without mutation; an actual
+repair request fails closed. Plan/workdir identity validation still runs first.
 
 The command queues work and leaves the execution paused; it launches no jobs.
 Resume with the original plan, workdir, output, and worker configuration.
@@ -209,8 +222,10 @@ Before authorizing a retry, WLO copies each selected attempt's `metadata.json`,
 failed metadata remains there until the retry starts; `wlo status` and
 `jobs.json` report the authorized job as pending in the meantime.
 
-`execution.json` retains `retry_history`: timestamp, operator-supplied reason,
-selected job IDs and prior attempt numbers, archive paths, and the breaker
+`execution.json` retains revisioned `retry_history` records using
+`wlo-recovery-action/v0.1`: deterministic action ID, timestamp,
+operator-supplied reason, selected job IDs, prior status/attempt, archive path,
+SHA-256 evidence and metadata hashes, interruption uncertainty, and the breaker
 state before acknowledgement. Breaker acknowledgement resets counters and
 advances its generation while preserving its trip history. Without
 acknowledgement, existing counters remain in force.

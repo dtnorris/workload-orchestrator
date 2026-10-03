@@ -220,6 +220,13 @@ interrupted attempts; a subsequent `start --resume` executes those queued
 retries. Start never implicitly retries either state. Foreground `run` and
 `resume` remain available with the same source options.
 
+Use `retry-failed ... --dry-run --json` before authorization to inspect exact
+job IDs, prior status/attempt, evidence hashes, archive destinations and breaker
+state. `wlo recovery PLAN.json --workdir WORKDIR --output OUTPUT` reads the
+durable action history. `wlo repair` is deliberately distinct: no safe generic
+repair transformation exists today, so preview reports unsupported and mutation
+fails closed without changing evidence.
+
 For a legacy v0.2 RPOF profile, every run/start/resume also supplies the original
 `--paid-budget FILE`, absolute `--rpof-executable FILE`, and
 `--authorize-paid-rpof`. Resume evaluates only the retained Step-6 handoff and

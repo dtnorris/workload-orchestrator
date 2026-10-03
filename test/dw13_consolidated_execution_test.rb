@@ -129,9 +129,14 @@ class Dw13ConsolidatedExecutionTest < Minitest::Test
     assert_equal "dynamic_worker_loss_in_doubt", archived.dig("evidence", "kind")
     assert_equal "generation-2", current.dig("worker_execution_identity", "generation_id")
     assert_equal "complete", current.fetch("status")
-    assert_equal [{ "job_id" => "replaced", "attempt" => 1,
-                    "archive" => "attempts/replaced/attempt-1" }],
-                 execution.fetch("retry_history").first.fetch("jobs")
+    recovery = execution.fetch("retry_history").first.fetch("jobs").first
+    assert_equal "replaced", recovery.fetch("job_id")
+    assert_equal "failed", recovery.fetch("prior_status")
+    assert_equal 1, recovery.fetch("prior_attempt")
+    assert_equal 1, recovery.fetch("attempt")
+    assert_equal "attempts/replaced/attempt-1", recovery.fetch("archive")
+    assert recovery.fetch("side_effects_uncertain")
+    assert_match(/\A[0-9a-f]{64}\z/, recovery.fetch("evidence_sha256"))
     assert_equal({ "complete" => 2, "failed" => 0, "running" => 0, "pending" => 0 },
                  status_document(plan).fetch("counts"))
     assert_equal plan.id, execution.fetch("plan_id")

@@ -80,7 +80,11 @@ selected attempts in one atomic execution-state update, leaving execution
 paused. Retry authorization changes the effective job status to pending only
 while the retained failed metadata still matches the authorized attempt number.
 The next dispatch increments that number; the old authorization cannot retry a
-later failure. Neither the frozen plan nor execution identity changes.
+later failure. Each action has a deterministic ID and content hashes; an exact
+repeat returns the existing authorization without another archive or audit row.
+`retry-failed --dry-run` and `recovery` are read-only. Repair is a separate,
+currently unsupported operation that validates identity and fails closed rather
+than guessing at unknown state. Neither the frozen plan nor execution identity changes.
 
 Run/resume hold an execution-wide nonblocking filesystem lock for their full
 lifetime. Retry takes the same lock before validating or copying evidence, in
