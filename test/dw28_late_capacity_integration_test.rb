@@ -48,11 +48,7 @@ class Dw28LateCapacityIntegrationTest < Minitest::Test
       worker = current.fetch("workers").find { |candidate| candidate.fetch("index") == index }
       raise "publisher observed the wrong pod" unless worker.fetch("pod_id") == observed_pod_id
 
-      model = worker.fetch("model")
-      {
-        "worker_id" => "rpof-#{model}-worker",
-        "generation_id" => "rpof-#{model}-generation-1"
-      }
+      worker.slice("worker_id", "generation_id")
     end
   end
 
@@ -217,6 +213,8 @@ class Dw28LateCapacityIntegrationTest < Minitest::Test
 
   def fleet(model, port)
     slug = model.delete(":")
+    worker_id = "rpof-#{model}-worker"
+    generation_id = "rpof-#{model}-generation-1"
     {
       "fleet_id" => "dw28-#{slug}",
       "status" => "active",
@@ -226,6 +224,8 @@ class Dw28LateCapacityIntegrationTest < Minitest::Test
         "index" => 1,
         "name" => "#{slug}-worker",
         "pod_id" => "#{slug}-pod",
+        "worker_id" => worker_id,
+        "generation_id" => generation_id,
         "generation" => 1,
         "created_at_utc" => "2029-12-31T23:59:00Z",
         "status" => "active",
@@ -246,6 +246,8 @@ class Dw28LateCapacityIntegrationTest < Minitest::Test
       "workers" => [{
         "index" => worker.fetch("index"),
         "pod_id" => worker.fetch("pod_id"),
+        "worker_id" => worker.fetch("worker_id"),
+        "generation_id" => worker.fetch("generation_id"),
         "pid" => 12_345,
         "endpoint" => worker.fetch("local_ollama_url"),
         "process_identity" => {
@@ -274,6 +276,8 @@ class Dw28LateCapacityIntegrationTest < Minitest::Test
       "workers" => [{
         "index" => worker.fetch("index"),
         "pod_id" => worker.fetch("pod_id"),
+        "worker_id" => worker.fetch("worker_id"),
+        "generation_id" => worker.fetch("generation_id"),
         "status" => "passed",
         "provenance_error" => nil,
         "provenance" => {

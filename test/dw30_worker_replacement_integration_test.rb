@@ -236,6 +236,8 @@ class Dw30WorkerReplacementIntegrationTest < Minitest::Test
       "workers" => [{
         "index" => worker.fetch("index"),
         "pod_id" => worker.fetch("pod_id"),
+        "worker_id" => worker.fetch("worker_id"),
+        "generation_id" => worker.fetch("generation_id"),
         "pid" => 12_345,
         "endpoint" => worker.fetch("local_ollama_url"),
         "process_identity" => {
@@ -263,6 +265,8 @@ class Dw30WorkerReplacementIntegrationTest < Minitest::Test
       "workers" => [{
         "index" => worker.fetch("index"),
         "pod_id" => worker.fetch("pod_id"),
+        "worker_id" => worker.fetch("worker_id"),
+        "generation_id" => worker.fetch("generation_id"),
         "status" => "passed",
         "provenance_error" => nil,
         "provenance" => {

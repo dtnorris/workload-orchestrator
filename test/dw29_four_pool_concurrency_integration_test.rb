@@ -185,10 +185,12 @@ class Dw29FourPoolConcurrencyIntegrationTest < Minitest::Test
     }
     identities = workers.to_h do |worker|
       index = worker.fetch("index")
-      [index, {
+      identity = {
         "worker_id" => "rpof-#{slug}-worker-#{index}",
         "generation_id" => "rpof-#{slug}-generation-#{index}-1"
-      }]
+      }
+      worker.merge!(identity)
+      [index, identity]
     end
     state = FakeFleetState.new(
       root: File.join(@tmp, "rpof-state"), fleet: fleet, identities: identities
@@ -224,6 +226,8 @@ class Dw29FourPoolConcurrencyIntegrationTest < Minitest::Test
     {
       "index" => worker.fetch("index"),
       "pod_id" => worker.fetch("pod_id"),
+      "worker_id" => worker.fetch("worker_id"),
+      "generation_id" => worker.fetch("generation_id"),
       "status" => "passed",
       "provenance_error" => nil,
       "provenance" => {
@@ -245,6 +249,8 @@ class Dw29FourPoolConcurrencyIntegrationTest < Minitest::Test
     {
       "index" => worker.fetch("index"),
       "pod_id" => worker.fetch("pod_id"),
+      "worker_id" => worker.fetch("worker_id"),
+      "generation_id" => worker.fetch("generation_id"),
       "pid" => 12_000 + worker.fetch("index"),
       "endpoint" => worker.fetch("local_ollama_url"),
       "process_identity" => {
