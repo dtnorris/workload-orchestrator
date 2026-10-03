@@ -2,6 +2,7 @@
 
 require_relative "workload_orchestrator/version"
 require_relative "workload_orchestrator/error"
+require_relative "workload_orchestrator/ollama_capability_request"
 require_relative "workload_orchestrator/config"
 require_relative "workload_orchestrator/plan"
 require_relative "workload_orchestrator/execution_profile"

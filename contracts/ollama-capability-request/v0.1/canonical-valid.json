@@ -1,0 +1,10 @@
+{
+  "contract_version": "ollama-capability-request/v0.1",
+  "ollama": {
+    "model": "qualified-model:latest",
+    "expected_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "required_context_length": 131072,
+    "require_fully_gpu_resident": true,
+    "required_gpu_id": "NVIDIA A40"
+  }
+}
