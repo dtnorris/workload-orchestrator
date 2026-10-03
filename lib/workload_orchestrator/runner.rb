@@ -3,6 +3,7 @@
 require "open3"
 require "time"
 require_relative "worker_registry_poller"
+require_relative "worker_registry_set"
 require_relative "dynamic_scheduler"
 
 module WorkloadOrchestrator
@@ -18,7 +19,7 @@ module WorkloadOrchestrator
       @plan = plan
       @workers = workers
       @workdir = File.expand_path(workdir)
-      @worker_source = worker_source
+      @worker_sources = worker_source && WorkerSourceSet.coerce(worker_source)
       @store = ExecutionStore.new(
         output_dir: output_dir, plan: plan, workdir: @workdir,
         workers_sha256: plan.execution_profile && !dynamic_workers? ? workers.execution_sha256(plan) : nil
@@ -98,9 +99,9 @@ module WorkloadOrchestrator
 
       store.start!
       @live_display.refresh
-      @worker_registry_poller ||= WorkerRegistryPoller.new(
-        source: @worker_source,
-        checkpoint_path: File.join(store.output_dir, "dynamic-workers", "checkpoint.json"),
+      @worker_registry_poller ||= WorkerRegistrySet.new(
+        sources: @worker_sources,
+        checkpoint_root: File.join(store.output_dir, "dynamic-workers"),
         clock: @worker_registry_clock,
         interval_seconds: @worker_poll_interval,
         sleeper: @worker_registry_sleeper || method(:dynamic_poll_sleep)
@@ -368,7 +369,7 @@ module WorkloadOrchestrator
     end
 
     def dynamic_workers?
-      !@worker_source.nil?
+      !@worker_sources.nil?
     end
 
     def reconcile_running_attempts!; end
@@ -423,7 +424,7 @@ module WorkloadOrchestrator
     end
 
     def cancellation_targets
-      [@command_executor, @worker_source].compact.select do |target|
+      [@command_executor, @worker_sources].compact.select do |target|
         target.respond_to?(:cancel) && target.respond_to?(:wait_for_cancellation)
       end.uniq
     end

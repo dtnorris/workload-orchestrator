@@ -39,8 +39,10 @@ WLO owns:
 
 RPOF owns RunPod fleet/resource mechanics, model/bootstrap readiness, tunnels,
 leases and cost safeguards, provider scaling/replacement, campaign admission
-and teardown. It publishes ready workers through the provider-neutral registry.
-WLO reacts only to that registry and never repairs provider infrastructure.
+and teardown. It publishes ready workers through the provider-neutral registry
+API that WLO owns. Local and future provider publishers implement that same
+API independently. WLO reacts only to their registries and never repairs
+provider infrastructure.
 
 One heterogeneous v0.3 plan becomes one WLO execution, scheduler and store.
 Jobs from every logical pool coexist in that execution; WLO matches each
@@ -111,11 +113,14 @@ profile is explicitly used. See [legacy-rpof-compatibility.md](legacy-rpof-compa
 
 ## Runtime placement overlay
 
-The production provider-neutral handoff is a v0.3 logical plan plus a
-`WorkerSource`. AFW emits no provider or resource identity. WLO binds each
-attempt to a validated registry worker and freezes that identity and snapshot
-as execution evidence. The immutable identity is `registry_id`, `worker_id`,
-`generation_id`, `endpoint` and `capability_fingerprint`. WLO starts from the
+The production provider-neutral handoff is a v0.3 logical plan plus one or more
+named `WorkerSource` entries. Each publisher keeps its own `registry_id`,
+revision sequence and durable checkpoint. WLO schedules across the union and
+never rewrites those namespaces behind a synthetic front door. AFW emits no
+provider or resource identity. WLO binds each attempt to a validated registry
+worker and freezes that identity and snapshot as execution evidence. The
+immutable identity is `registry_id`, `worker_id`, `generation_id`, `endpoint`
+and `capability_fingerprint`. WLO starts from the
 ordinary inherited process environment, applies the job environment, then
 injects the selected attempt's `AF_OLLAMA_BASE_URL` last. Worker disappearance
 or replacement fails the bound attempt in doubt and halts dispatch; a new

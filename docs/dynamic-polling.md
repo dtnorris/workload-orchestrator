@@ -1,16 +1,19 @@
 # Dynamic polling and idle execution
 
 Dynamic worker discovery and scheduling belong to one WLO execution. Polling
-never creates a new execution, job, or attempt, and the accepted registry
-checkpoint remains in the same output directory across pause and resume.
+never creates a new execution, job, or attempt. Every named source has an
+independent accepted registry checkpoint in the same output directory across
+pause and resume.
 
-The production CLI constructs a `CommandWorkerSource` from
-`--worker-source-command` plus repeated `--worker-source-arg` values. It
-executes that argv directly once per poll and passes stdout bytes unchanged to
-the registry parser. It does not invoke a shell, cache a snapshot, mutate
-global `ENV`, or interpret provider/domain semantics. A nonzero exit or exec
-failure is a registry-source error; stderr and exit detail are retained in the
-fail-closed dispatch-halt message.
+The production CLI constructs named `CommandWorkerSource` entries from
+`--worker-sources-config`. Each entry executes its argv directly once per poll
+and passes stdout bytes unchanged to its registry parser. Source-specific
+environment and working-directory values apply only to that subprocess. WLO
+does not invoke a shell, mutate global `ENV`, or interpret provider/domain
+semantics. A nonzero exit or exec failure is a registry-source error; stderr
+and exit detail are retained in the fail-closed dispatch-halt message. The
+single-command CLI form remains compatible and uses its legacy checkpoint
+path.
 
 ## Waiting for capacity
 
@@ -30,16 +33,20 @@ claimed.
 
 ## Poll and scheduling cycle
 
-`Runner` owns one `WorkerRegistryPoller` and one `DynamicScheduler`. Each cycle
+`Runner` owns one `WorkerRegistrySet` and one `DynamicScheduler`. The set owns
+one poller and checkpoint per named source. Each cycle
 performs these actions in order:
 
-1. validate and durably accept the next registry snapshot;
-2. reconcile running dynamic attempts against that accepted checkpoint;
-3. if dispatch remains allowed, run the DW-11 scheduler against the immutable
+1. validate and durably accept each next registry snapshot;
+2. reject duplicate publisher `registry_id` values and form a union without
+   changing any publisher identity;
+3. reconcile each running dynamic attempt against the accepted checkpoint for
+   its exact `registry_id`;
+4. if dispatch remains allowed, run the DW-11 scheduler against the immutable
    current and READY worker views;
-4. durably bind and launch the selected assignments;
-5. inspect the authoritative job and execution state; and
-6. when work remains, wait for attempt activity or the configured poll interval
+5. durably bind and launch the selected assignments;
+6. inspect the authoritative job and execution state; and
+7. when work remains, wait for attempt activity or the configured poll interval
    before polling and scheduling again.
 
 A scheduling pass that produces no assignments does not finish the execution
@@ -103,7 +110,8 @@ snapshot against the durable checkpoint, and restarts the same poll/schedule
 cycle. It does not reset attempt history.
 
 Registry contract, freshness, identity, revision, and immutable-revision
-violations, malformed command output, and source-command failures remain fatal
+violations, duplicate registry namespaces, malformed command output, and
+source-command failures remain fatal
 and create the existing fail-closed `worker_registry` dispatch halt. They are
 never treated as ordinary absence of capacity and never fall back to static
 workers or legacy RPOF workload dispatch.

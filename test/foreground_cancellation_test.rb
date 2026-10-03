@@ -6,7 +6,7 @@ class ForegroundCancellationTest < Minitest::Test
   include WloTestSupport
 
   NOW = Time.iso8601("2030-01-01T00:01:00Z")
-  REGISTRY_FIXTURE = File.expand_path("fixtures/dynamic-worker-registry-v0.1.json", __dir__)
+  REGISTRY_FIXTURE = File.expand_path("../contracts/dynamic-worker-registry/v0.1/minimal-valid.json", __dir__)
 
   class RecordingCancellationTarget
     attr_reader :requests, :wait_count
@@ -188,7 +188,7 @@ class ForegroundCancellationTest < Minitest::Test
     runner = runner_for(
       plan,
       command_executor: target,
-      worker_source: Object.new
+      worker_source: WorkloadOrchestrator::StaticWorkerSource.from_file(REGISTRY_FIXTURE)
     )
 
     begin

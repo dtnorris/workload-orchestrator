@@ -5,35 +5,36 @@ require "digest"
 require "time"
 
 class DynamicWorkerRegistryContractTest < Minitest::Test
-  FIXTURE = File.expand_path("fixtures/dynamic-worker-registry-v0.1.json", __dir__)
-  INVALID_ROOT = File.expand_path("fixtures/dynamic-worker-registry-v0.1-invalid", __dir__)
+  CONTRACT_ROOT = File.expand_path("../contracts/dynamic-worker-registry/v0.1", __dir__)
+  FIXTURE = File.join(CONTRACT_ROOT, "minimal-valid.json")
+  INVALID_ROOT = File.join(CONTRACT_ROOT, "invalid")
   NOW = Time.iso8601("2030-01-01T00:01:00Z")
   AUTHORITATIVE_SHA256 = {
-    "fixtures/dynamic-worker-registry-v0.1.json" =>
+    "minimal-valid.json" =>
       "58c8f7e79b61bb454948ee045a6f7df89453a7805b54ed438df8d8b8dcb2ba26",
-    "fixtures/dynamic-worker-registry-v0.1-invalid/bad-contract-version.json" =>
+    "invalid/bad-contract-version.json" =>
       "2d2d1de94283ac2694b717b5a21817c4be02292296321660d4616fadf1630f45",
-    "fixtures/dynamic-worker-registry-v0.1-invalid/bad-endpoint.json" =>
+    "invalid/bad-endpoint.json" =>
       "06c53db11ff489ba30f49fa24d444aadd82c5b64f4fffb4ec092b9c7b000f4bd",
-    "fixtures/dynamic-worker-registry-v0.1-invalid/bad-fingerprint.json" =>
+    "invalid/bad-fingerprint.json" =>
       "7d9afb6834594fbc85dab591a09ed4bca82735e6856c0060fdc732dcdeedf417",
-    "fixtures/dynamic-worker-registry-v0.1-invalid/bad-publication-window.json" =>
+    "invalid/bad-publication-window.json" =>
       "833b303395e8cd46329d40ac63c52922ded9239f9d352a7c392efdbb98e59b1c",
-    "fixtures/dynamic-worker-registry-v0.1-invalid/bad-state.json" =>
+    "invalid/bad-state.json" =>
       "e90a4ed6e4907595479c231467a723aee4e35c7d872a6fbe507f03c7ea2a6127",
-    "fixtures/dynamic-worker-registry-v0.1-invalid/duplicate-worker-id.json" =>
+    "invalid/duplicate-worker-id.json" =>
       "fb334f5f996a0e6f16bb4880303b027443cfa16ce9f9f1693e96aced65816dbb",
-    "fixtures/dynamic-worker-registry-v0.1-invalid/missing-generation.json" =>
+    "invalid/missing-generation.json" =>
       "c0d0b86037813f05e08df80789d00152d0e086d9fd403aca9b200ab789aa8ddf"
   }.freeze
 
   def test_fixture_bytes_match_the_authoritative_contract
     actual_paths = [FIXTURE] + Dir[File.join(INVALID_ROOT, "*.json")]
-    expected_paths = AUTHORITATIVE_SHA256.keys.map { |path| File.expand_path(path, __dir__) }
+    expected_paths = AUTHORITATIVE_SHA256.keys.map { |path| File.join(CONTRACT_ROOT, path) }
 
     assert_equal expected_paths.sort, actual_paths.sort
     AUTHORITATIVE_SHA256.each do |path, expected_hash|
-      assert_equal expected_hash, Digest::SHA256.file(File.expand_path(path, __dir__)).hexdigest
+      assert_equal expected_hash, Digest::SHA256.file(File.join(CONTRACT_ROOT, path)).hexdigest
     end
   end
 

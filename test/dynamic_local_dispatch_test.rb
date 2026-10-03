@@ -7,7 +7,7 @@ class DynamicLocalDispatchTest < Minitest::Test
   include WloTestSupport
 
   NOW = Time.iso8601("2030-01-01T00:01:00Z")
-  FIXTURE = File.expand_path("fixtures/dynamic-worker-registry-v0.1.json", __dir__)
+  FIXTURE = File.expand_path("../contracts/dynamic-worker-registry/v0.1/minimal-valid.json", __dir__)
   AFW_CONTROL_NAMES = %w[
     AF_CATALOG_ROLE AF_CATALOG_WORKBOOK AF_INVESTIGATION_GUARDRAIL_PROFILE
     AF_LETHALITY_GUARDRAIL_PROFILE AF_LLM_MAX_TOKENS AF_LLM_PROVIDER

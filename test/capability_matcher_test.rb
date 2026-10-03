@@ -6,7 +6,7 @@ class CapabilityMatcherTest < Minitest::Test
   include WloTestSupport
 
   PLAN_FIXTURE = File.expand_path("fixtures/afw-wlo-v0.2.json", __dir__)
-  REGISTRY_FIXTURE = File.expand_path("fixtures/dynamic-worker-registry-v0.1.json", __dir__)
+  REGISTRY_FIXTURE = File.expand_path("../contracts/dynamic-worker-registry/v0.1/minimal-valid.json", __dir__)
   NOW = Time.iso8601("2030-01-01T00:01:00Z")
   REQUIREMENT = {
     "model" => "qualified-model:latest",

@@ -5,8 +5,11 @@ resumable execution of declarative command workloads across configured workers.
 
 ## Status
 
-WLO's production runtime executes provider-neutral v0.3 plans against a dynamic
-`WorkerSource` registry. Generic v0.1 local execution and v0.2 execution-profile
+WLO's production runtime executes provider-neutral v0.3 plans against one or
+more independently configured dynamic worker registries. WLO owns the frozen
+[`dynamic-worker-registry/v0.1`](contracts/dynamic-worker-registry/v0.1/README.md)
+public provider API and its canonical fixtures. Generic v0.1 local execution
+and v0.2 execution-profile
 compatibility remain available during migration. WLO provides:
 
 - strict JSON execution-plan validation;
@@ -27,8 +30,9 @@ compatibility remain available during migration. WLO provides:
 - Mac-local command execution against the exact selected worker endpoint.
 
 Provider capacity campaigns run independently in RPOF. WLO consumes their
-provider-neutral worker registry and owns no provider budget, admission,
-resource creation, retention or teardown decision.
+provider-neutral worker registries, along with independently published local
+registries, and owns no provider budget, admission, resource creation,
+retention or teardown decision.
 
 WLO does not interpret the domain meaning of a workload or its results. AFW
 owns AdventureFinder selection, qualification, frozen scoring contracts and
@@ -37,15 +41,19 @@ cost safeguards, scaling, replacement and teardown.
 
 ## Provider-neutral workloads
 
-New v0.3 plans declare logical pools, requirements and opaque jobs. A
-`WorkerSource` supplies validated registry snapshots; WLO selects eligible
-workers, persists exact attempt bindings and runs each job command locally with
-the selected endpoint. Zero compatible workers leaves the execution alive and
-polling. Local stdout, stderr, exit status and executor exceptions determine
-command results; no RPOF workload request or result translation participates.
-The CLI accepts an argv-safe polling command through
-`--worker-source-command` and repeated `--worker-source-arg` options. See
-[the operator workflow](docs/operator-workflow.md) and
+New v0.3 plans declare logical pools, requirements and opaque jobs. Named
+`WorkerSource` entries supply validated registry snapshots; WLO schedules over
+their union while preserving each publisher's `registry_id`, revision and
+durable checkpoint. WLO never creates a merged or synthetic registry identity.
+It selects eligible workers, persists exact attempt bindings and runs each job
+command locally with the selected endpoint. Zero compatible workers leaves the
+execution alive and polling. Local stdout, stderr, exit status and executor
+exceptions determine command results; no RPOF workload request or result
+translation participates. The CLI accepts a strict named-source configuration
+through `--worker-sources-config`. The single-command
+`--worker-source-command` / `--worker-source-arg` form remains a compatibility
+path. See [named worker sources](docs/worker-sources.md),
+[the operator workflow](docs/operator-workflow.md), and
 [the dynamic dispatch boundary](docs/dynamic-dispatch-boundary.md).
 
 Existing v0.1 local plans and v0.2 local/fixed-remote profiles remain supported

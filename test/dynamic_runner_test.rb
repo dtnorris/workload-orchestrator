@@ -5,7 +5,7 @@ require_relative "test_helper"
 class DynamicRunnerTest < Minitest::Test
   include WloTestSupport
 
-  FIXTURE = File.expand_path("fixtures/dynamic-worker-registry-v0.1.json", __dir__)
+  FIXTURE = File.expand_path("../contracts/dynamic-worker-registry/v0.1/minimal-valid.json", __dir__)
   NOW = Time.iso8601("2030-01-01T00:01:00Z")
 
   class SequenceSource < WorkloadOrchestrator::WorkerSource

@@ -56,12 +56,12 @@ module WorkloadOrchestrator
     def snapshot
       CONSISTENCY_RETRIES.times do
         before = @report.document
-        checkpoint = read_checkpoint
+        checkpoints = read_checkpoints
         attempts = running_attempts(before)
         after = @report.document
         next unless stable_report?(before, after)
 
-        return build_snapshot(after, checkpoint, attempts)
+        return build_snapshot(after, checkpoints, attempts)
       rescue TransientRead
         next
       end
@@ -95,8 +95,8 @@ module WorkloadOrchestrator
       @out.puts "---" unless @tty || TERMINAL_STATUSES.include?(document.fetch("status"))
     end
 
-    def build_snapshot(report, checkpoint, attempts)
-      registry = worker_registry(checkpoint, attempts)
+    def build_snapshot(report, checkpoints, attempts)
+      registry = worker_registry(checkpoints, attempts)
       waiting = waiting_state(report)
       report.merge(
         "display_state" => display_state(report, waiting),
@@ -158,13 +158,19 @@ module WorkloadOrchestrator
       value.getutc
     end
 
-    def read_checkpoint
-      path = File.join(@root, "dynamic-workers", "checkpoint.json")
-      return unless File.file?(path)
+    def read_checkpoints
+      source_paths = Dir.glob(File.join(@root, "dynamic-workers", "sources", "*", "checkpoint.json"))
+      legacy_path = File.join(@root, "dynamic-workers", "checkpoint.json")
+      paths = source_paths.empty? && File.file?(legacy_path) ? [legacy_path] : source_paths
+      documents = paths.map do |path|
+        JSON.parse(File.read(path)).tap { |document| validate_checkpoint!(document) }
+      end
+      ids = documents.map { |document| document.fetch("registry_id") }
+      raise Error, "worker registry checkpoints contain duplicate registry identities" unless ids.uniq == ids
 
-      JSON.parse(File.read(path)).tap { |document| validate_checkpoint!(document) }
+      documents
     rescue Errno::ENOENT
-      nil
+      []
     rescue JSON::ParserError, KeyError, ArgumentError, TypeError => e
       raise Error, "cannot read worker registry checkpoint: #{e.message}"
     end
@@ -213,28 +219,38 @@ module WorkloadOrchestrator
       }
     end
 
-    def worker_registry(checkpoint, attempts)
-      return { "available" => false, "workers" => [], "counts" => empty_worker_counts } unless checkpoint
+    def worker_registry(checkpoints, attempts)
+      return { "available" => false, "workers" => [], "counts" => empty_worker_counts } if checkpoints.empty?
 
       busy = attempts.map do |attempt|
         DynamicWorkerBinding::IDENTITY_KEYS.map do |key|
           attempt.fetch("worker_execution_identity")[key]
         end
       end
-      workers = checkpoint.fetch("workers").map { |worker| watched_worker(worker, busy) }
+      workers = checkpoints.flat_map do |checkpoint|
+        checkpoint.fetch("workers").map do |worker|
+          watched_worker(worker, busy, checkpoint.fetch("registry_id"))
+        end
+      end
       mark_current_attempts!(attempts, workers)
+      registries = checkpoints.map do |checkpoint|
+        checkpoint.slice("registry_id", "revision", "accepted_at")
+      end
       {
         "available" => true,
-        "registry_id" => checkpoint.fetch("registry_id"),
-        "revision" => checkpoint.fetch("revision"),
-        "accepted_at" => checkpoint.fetch("accepted_at"),
-        "capabilities_available" => checkpoint.fetch("workers").all? { |row| row.key?("worker_snapshot") },
+        "registry_id" => registries.one? ? registries.first.fetch("registry_id") : nil,
+        "revision" => registries.one? ? registries.first.fetch("revision") : nil,
+        "accepted_at" => registries.map { |row| row.fetch("accepted_at") }.max,
+        "registries" => registries,
+        "capabilities_available" => checkpoints.all? do |checkpoint|
+          checkpoint.fetch("workers").all? { |row| row.key?("worker_snapshot") }
+        end,
         "counts" => worker_counts(workers),
         "workers" => workers
       }
     end
 
-    def watched_worker(worker, busy)
+    def watched_worker(worker, busy, registry_id)
       is_busy = busy.include?(worker.fetch("execution_identity"))
       availability = if is_busy
                        "busy"
@@ -244,6 +260,7 @@ module WorkloadOrchestrator
                        "unavailable"
                      end
       {
+        "registry_id" => registry_id,
         "worker_id" => worker.fetch("worker_id"),
         "generation_id" => worker.fetch("generation_id"),
         "endpoint" => worker.fetch("endpoint"),
@@ -352,7 +369,9 @@ module WorkloadOrchestrator
       @out.puts "Workers: READY=#{counts.fetch('READY')} NOT_READY=#{counts.fetch('NOT_READY')} " \
                 "UNAVAILABLE=#{counts.fetch('UNAVAILABLE')} busy=#{counts.fetch('busy')} " \
                 "idle-ready=#{counts.fetch('idle_ready')}"
-      @out.puts "Registry: #{registry.fetch('registry_id')} revision=#{registry.fetch('revision')}"
+      registry.fetch("registries").each do |row|
+        @out.puts "Registry: #{row.fetch('registry_id')} revision=#{row.fetch('revision')}"
+      end
     end
 
     def print_pools(pools)

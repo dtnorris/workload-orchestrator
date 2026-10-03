@@ -1,0 +1,8 @@
+contract_version: wlo-worker-sources/v0.1
+sources:
+  - name: local
+    command: /absolute/path/to/local-ollama-workers/bin/low
+    args:
+      - workers
+      - --json
+    workdir: /absolute/path/to/local-ollama-workers

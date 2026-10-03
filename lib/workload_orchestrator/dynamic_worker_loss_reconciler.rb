@@ -12,21 +12,34 @@ module WorkloadOrchestrator
     end
 
     def reconcile!(poller)
-      unless poller.is_a?(WorkerRegistryPoller)
-        raise Error, "worker-loss reconciliation requires the accepted registry poller"
-      end
+      checkpoints = accepted_checkpoints(poller)
+      return [].freeze if checkpoints.empty?
 
-      checkpoint = poller.accepted_checkpoint
-      return [].freeze unless checkpoint
-
-      workers = checkpoint.fetch("workers")
-      workers_by_id = workers.to_h { |worker| [worker.fetch("worker_id"), worker] }
       store.dynamic_running_attempts.filter_map do |attempt|
+        registry_id = attempt.worker_binding.execution_identity.fetch("registry_id")
+        checkpoint = checkpoints[registry_id]
+        unless checkpoint
+          raise Error, "no accepted registry checkpoint for running attempt namespace #{registry_id.inspect}"
+        end
+
+        workers = checkpoint.fetch("workers")
+        workers_by_id = workers.to_h { |worker| [worker.fetch("worker_id"), worker] }
         reconcile_attempt(attempt, checkpoint, workers, workers_by_id)
       end.freeze
     end
 
     private
+
+    def accepted_checkpoints(poller)
+      return poller.accepted_checkpoints if poller.respond_to?(:accepted_checkpoints)
+
+      unless poller.is_a?(WorkerRegistryPoller)
+        raise Error, "worker-loss reconciliation requires accepted registry pollers"
+      end
+
+      checkpoint = poller.accepted_checkpoint
+      checkpoint ? { checkpoint.fetch("registry_id") => checkpoint }.freeze : {}.freeze
+    end
 
     def reconcile_attempt(attempt, checkpoint, workers, workers_by_id)
       binding = attempt.worker_binding

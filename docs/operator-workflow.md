@@ -38,9 +38,10 @@ proves provider absence. For campaign-owned paid capacity, request teardown with
 
 ## Production v0.3 dynamic execution
 
-Start the RPOF capacity campaign separately. WLO only polls its provider-neutral
-registry output; it does not create, retain, resize or tear down capacity and
-does not send a workload request to RPOF.
+Start any RPOF capacity campaign separately. Configure its registry publisher,
+the local publisher, or both as named WLO worker sources. WLO only polls their
+provider-neutral registry outputs; it does not create, retain, resize or tear
+down capacity and does not send a workload request to RPOF.
 
 Inspect an unbound v0.3 plan without a profile, worker configuration or live
 registry:
@@ -49,24 +50,22 @@ registry:
 bin/wlo plan PLAN.json --workdir /absolute/path/to/af-workloads
 ```
 
-Run the plan against the current RPOF registry:
+Run the plan against the configured local, remote or mixed registry set:
 
 ```bash
 bin/wlo run PLAN.json \
   --workdir /absolute/path/to/af-workloads \
   --output /absolute/path/to/output \
-  --worker-source-command /absolute/path/to/runpod-ollama-fleet/bin/rpof \
-  --worker-source-arg workers \
-  --worker-source-arg=--json
+  --worker-sources-config /absolute/path/to/worker-sources.yml
 ```
 
-`--worker-source-command` is the executable. Repeat
-`--worker-source-arg` once for each argument; use the equals form when an
-argument begins with a dash. WLO invokes the resulting argv directly without a
-shell on every poll. Stdout must be one complete
-`dynamic-worker-registry/v0.1` snapshot. Nonzero exit, malformed output,
-stale/replayed revision or invalid registry data halts dispatch; there is no
-legacy fallback.
+See [named worker sources](worker-sources.md) and the checked-in local-only,
+remote-only and mixed examples. WLO invokes each configured argv directly
+without a shell on every poll. Each stdout must be one complete
+`dynamic-worker-registry/v0.1` snapshot with a unique `registry_id`. Nonzero
+exit, malformed output, duplicate namespaces, stale/replayed revision or
+invalid registry data halts dispatch; there is no legacy fallback. The older
+single-command flags remain available only as a one-source compatibility path.
 
 No `--execution-profile`, `--workers-config`, `--paid-budget`,
 `--authorize-paid-rpof` or workload-dispatch `--rpof-executable` option is
@@ -80,9 +79,7 @@ identity, launches the scorer locally and injects its endpoint as
 bin/wlo start PLAN.json \
   --workdir WORKDIR \
   --output OUTPUT \
-  --worker-source-command /absolute/path/to/runpod-ollama-fleet/bin/rpof \
-  --worker-source-arg workers \
-  --worker-source-arg=--json
+  --worker-sources-config /absolute/path/to/worker-sources.yml
 ```
 
 The forked manager retains the immutable command argv and continues polling
@@ -156,9 +153,10 @@ view. The watcher exits automatically for `completed`, `workload_failed`, and
 execution.
 
 `watch` reads `execution.json`, `jobs.json`, current running-attempt metadata,
-the pause sentinel, the execution lock, optional manager records, and the last
-accepted `dynamic-workers/checkpoint.json`. It does not instantiate a runner or
-poller, contact RPOF, claim work, or write execution state. Busy workers are
+the pause sentinel, the execution lock, optional manager records, and all last
+accepted per-source checkpoints (with legacy single-checkpoint fallback). It
+does not instantiate a runner or poller, contact a publisher, claim work, or
+write execution state. Busy workers are
 matched to running attempts by their complete execution identity, including
 generation and capability fingerprint. New checkpoints retain the validated
 DW-19 worker snapshot so the existing scheduler can derive compatible capacity;
@@ -204,14 +202,13 @@ bin/wlo start PLAN.json \
   --resume \
   --workdir WORKDIR \
   --output OUTPUT \
-  --worker-source-command /absolute/path/to/runpod-ollama-fleet/bin/rpof \
-  --worker-source-arg workers \
-  --worker-source-arg=--json
+  --worker-sources-config /absolute/path/to/worker-sources.yml
 ```
 
-Supply the dynamic source again when resuming v0.3; it is external discovery
-configuration, not persisted provider authority. The existing registry
-checkpoint, execution identity and attempt history remain in OUTPUT. Supply the
+Supply the dynamic source configuration again when resuming v0.3; it is
+external discovery configuration, not persisted provider authority. The
+existing per-source registry checkpoints, execution identity and attempt
+history remain in OUTPUT. Supply the
 original profile for profiled legacy runs. `--resume` is explicit: ordinary
 `start` honors a retained pause request. If the breaker is tripped,
 acknowledge it using `--resume --acknowledge-circuit-breaker` only after

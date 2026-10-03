@@ -16,8 +16,9 @@ token. A dynamic dispatcher must retain that token and use
 
 ## Reconciliation rules
 
-`DynamicWorkerLossReconciler` reads only the checkpoint durably accepted by
-`WorkerRegistryPoller`.
+`DynamicWorkerLossReconciler` reads only the checkpoint durably accepted for
+the running attempt's exact `registry_id`. Loss or replacement in one source
+cannot affect a same-named worker in another registry namespace.
 
 | Accepted registry observation | Running-attempt result |
 | --- | --- |

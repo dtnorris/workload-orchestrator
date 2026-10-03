@@ -560,9 +560,11 @@ module WorkloadOrchestrator
           bin/wlo plan PLAN.json --workdir DIR [--workers-config FILE]
           bin/wlo worker-check PLAN.json [--workers-config FILE] [--execution-profile FILE]
           bin/wlo run PLAN.json --workdir DIR --output DIR [--workers-config FILE]
-                      [--execution-profile FILE] [--worker-source-command FILE] [--worker-source-arg ARG ...]
+                      [--execution-profile FILE] [--worker-sources-config FILE]
+                      [--worker-source-command FILE] [--worker-source-arg ARG ...]
           bin/wlo start PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--resume]
                         [--acknowledge-circuit-breaker] [--execution-profile FILE]
+                        [--worker-sources-config FILE]
                         [--worker-source-command FILE [--worker-source-arg ARG ...]]
           bin/wlo status PLAN.json --output DIR [--human | --json] [--verbose] [--width COLUMNS]
           bin/wlo summary PLAN.json --output DIR [--json] [--verbose] [--width COLUMNS]
@@ -572,6 +574,7 @@ module WorkloadOrchestrator
           bin/wlo pause --output DIR
           bin/wlo resume PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--acknowledge-circuit-breaker]
                          [--execution-profile FILE]
+                         [--worker-sources-config FILE]
                          [--worker-source-command FILE [--worker-source-arg ARG ...]]
           bin/wlo retry-failed PLAN.json --workdir DIR --output DIR (--all | --job ID ...) --reason TEXT
                                [--acknowledge-circuit-breaker] [--dry-run] [--json]

@@ -46,14 +46,15 @@ module WorkloadOrchestrator
     def document(report)
       return [] unless @plan.priority_scheduling?
 
-      checkpoint, registry_error = load_checkpoint
-      registry_error ||= "accepted registry checkpoint is expired" if checkpoint_expired?(checkpoint)
-      registry_workers = build_registry_workers(checkpoint)
+      checkpoints, registry_error = load_checkpoints
+      registry_error ||= "an accepted registry checkpoint is expired" if checkpoints_expired?(checkpoints)
+      registry_workers = build_registry_workers(checkpoints)
       ready_workers = registry_workers.select(&:ready?)
       busy_identities = running_identities(report.fetch("jobs"))
 
       shared = {
-        checkpoint:, registry_error:, registry_workers:, ready_workers:, busy_identities:
+        checkpoint: checkpoints.length == 1 ? checkpoints.first : nil,
+        checkpoints:, registry_error:, registry_workers:, ready_workers:, busy_identities:
       }
       @plan.pools.map { |pool| pool_document(pool, report, shared) }
     end
@@ -70,6 +71,9 @@ module WorkloadOrchestrator
         "state" => state_for(reason),
         "reason" => reason,
         "registry_revision" => shared.dig(:checkpoint, "revision"),
+        "registry_revisions" => shared.fetch(:checkpoints).to_h do |checkpoint|
+          [checkpoint.fetch("registry_id"), checkpoint.fetch("revision")]
+        end,
         "relevant_worker_ids" => relevant_worker_ids(reason, evidence, shared)
       }
       registry_error = shared.fetch(:registry_error)
@@ -107,7 +111,7 @@ module WorkloadOrchestrator
 
     def capacity_evidence(evidence, shared)
       {
-        runnable: evidence.fetch(:runnable), checkpoint: shared.fetch(:checkpoint),
+        runnable: evidence.fetch(:runnable), checkpoint: shared.fetch(:checkpoints).empty? ? nil : true,
         registry_error: shared.fetch(:registry_error), compatible: evidence.fetch(:compatible),
         busy: evidence.fetch(:busy), idle: evidence.fetch(:idle),
         ready_workers: evidence.fetch(:ready_workers),
@@ -211,17 +215,21 @@ module WorkloadOrchestrator
       raise Error, "invalid running worker identity: #{e.message}"
     end
 
-    def load_checkpoint
-      path = File.join(@root, "dynamic-workers", "checkpoint.json")
-      return [nil, nil] unless File.file?(path)
+    def load_checkpoints
+      source_paths = Dir.glob(File.join(@root, "dynamic-workers", "sources", "*", "checkpoint.json"))
+      legacy_path = File.join(@root, "dynamic-workers", "checkpoint.json")
+      paths = source_paths.empty? && File.file?(legacy_path) ? [legacy_path] : source_paths
+      documents = paths.map do |path|
+        JSON.parse(File.read(path)).tap { |document| validate_checkpoint!(document) }
+      end
+      ids = documents.map { |document| document.fetch("registry_id") }
+      raise Error, "accepted registry checkpoints contain duplicate registry identities" unless ids.uniq == ids
 
-      document = JSON.parse(File.read(path))
-      validate_checkpoint!(document)
-      [document, nil]
+      [documents, nil]
     rescue Errno::ENOENT
-      [nil, nil]
+      [[], nil]
     rescue JSON::ParserError, KeyError, ArgumentError, TypeError, Error => e
-      [nil, "accepted registry checkpoint is invalid: #{e.message}"]
+      [[], "accepted registry checkpoint is invalid: #{e.message}"]
     end
 
     def validate_checkpoint!(document)
@@ -291,8 +299,8 @@ module WorkloadOrchestrator
       raise Error, "checkpoint worker snapshot state conflicts"
     end
 
-    def checkpoint_expired?(checkpoint)
-      checkpoint && Time.iso8601(checkpoint.fetch("expires_at")) <= current_time
+    def checkpoints_expired?(checkpoints)
+      checkpoints.any? { |checkpoint| Time.iso8601(checkpoint.fetch("expires_at")) <= current_time }
     end
 
     def current_time
@@ -302,31 +310,31 @@ module WorkloadOrchestrator
       value.getutc
     end
 
-    def build_registry_workers(checkpoint)
-      return [] unless checkpoint
+    def build_registry_workers(checkpoints)
+      checkpoints.flat_map do |checkpoint|
+        checkpoint.fetch("workers").filter_map do |worker|
+          next unless worker["worker_snapshot"]
 
-      checkpoint.fetch("workers").filter_map do |worker|
-        next unless worker["worker_snapshot"]
-
-        snapshot = worker.fetch("worker_snapshot")
-        RegistryWorker.new(
-          registry: {
-            registry_id: checkpoint.fetch("registry_id"),
-            revision: checkpoint.fetch("revision"),
-            published_at: Time.iso8601(checkpoint.fetch("published_at")),
-            expires_at: Time.iso8601(checkpoint.fetch("expires_at")),
-            sha256: checkpoint.fetch("snapshot_sha256")
-          }.freeze,
-          record: {
-            "worker_id" => worker.fetch("worker_id"),
-            "generation_id" => worker.fetch("generation_id"),
-            "endpoint" => worker.fetch("endpoint"),
-            "state" => worker.fetch("state"),
-            "labels" => snapshot.fetch("labels"),
-            "capabilities" => snapshot.fetch("capabilities"),
-            "capability_fingerprint" => worker.fetch("capability_fingerprint")
-          }.freeze
-        )
+          snapshot = worker.fetch("worker_snapshot")
+          RegistryWorker.new(
+            registry: {
+              registry_id: checkpoint.fetch("registry_id"),
+              revision: checkpoint.fetch("revision"),
+              published_at: Time.iso8601(checkpoint.fetch("published_at")),
+              expires_at: Time.iso8601(checkpoint.fetch("expires_at")),
+              sha256: checkpoint.fetch("snapshot_sha256")
+            }.freeze,
+            record: {
+              "worker_id" => worker.fetch("worker_id"),
+              "generation_id" => worker.fetch("generation_id"),
+              "endpoint" => worker.fetch("endpoint"),
+              "state" => worker.fetch("state"),
+              "labels" => snapshot.fetch("labels"),
+              "capabilities" => snapshot.fetch("capabilities"),
+              "capability_fingerprint" => worker.fetch("capability_fingerprint")
+            }.freeze
+          )
+        end
       end
     rescue KeyError, ArgumentError, TypeError, Error => e
       raise Error, "invalid accepted registry worker evidence: #{e.message}"

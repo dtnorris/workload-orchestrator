@@ -1,0 +1,11 @@
+contract_version: wlo-worker-sources/v0.1
+sources:
+  - name: remote
+    command: /absolute/path/to/runpod-ollama-fleet/bin/rpof
+    args:
+      - workers
+      - --json
+    environment:
+      RPOF_STATE_ROOT: /absolute/path/to/fleet-state
+      RPOF_STATE_REPO_ROOT: /absolute/path/to/runpod-ollama-fleet
+    workdir: /absolute/path/to/runpod-ollama-fleet
