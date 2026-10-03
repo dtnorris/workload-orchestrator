@@ -48,7 +48,9 @@ The CLI accepts an argv-safe polling command through
 [the operator workflow](docs/operator-workflow.md) and
 [the dynamic dispatch boundary](docs/dynamic-dispatch-boundary.md).
 
-Existing v0.1 local plans and v0.2 local/fixed-remote profiles remain supported.
+Existing v0.1 local plans and v0.2 local/fixed-remote profiles remain supported
+for historical compatibility. A v0.3 plan cannot be rebound through an
+execution profile; it requires the provider-neutral dynamic worker source.
 DW-33 removed WLO-owned RPOF execution. Historical RPOF profiles remain readable
 but cannot run or perform provider readiness checks. See
 [legacy RPOF compatibility](docs/legacy-rpof-compatibility.md).
@@ -78,7 +80,11 @@ cp config/workers.example.yml config/workers.yml
 `config/workers.yml`, `.env`, and `output/` are machine-local and ignored by
 Git.
 
-## Quick start
+## Generic compatibility example
+
+The bundled `hello-plan.json` demonstrates the retained static v0.1 command
+runner. It is not the production AdventureFinder path; new AFW production work
+uses an unbound v0.3 plan and a dynamic worker source.
 
 Validate the bundled generic example:
 

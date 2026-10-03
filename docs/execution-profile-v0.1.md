@@ -1,11 +1,12 @@
 > DW-33: RPOF profiles remain readable but are rejected by run/start/resume
-> and worker-check. Local and fixed-remote execution remains supported.
+> and worker-check. Local and fixed-remote execution remains supported only
+> for v0.2 compatibility. v0.3 rejects every execution profile.
 
 # Provider-neutral execution profiles
 
 > Legacy v0.2 compatibility: production v0.3 uses a provider-neutral dynamic
 > worker registry and gives WLO no paid-capacity authority. This profile
-> contract remains only for recoverable executions and rollback until DW-33.
+> contract remains only for retained v0.2 execution and rollback.
 
 Decision: separate workload intent from placement through a versioned runtime
 JSON overlay. The plan remains the workload identity; the profile is an additional
@@ -17,9 +18,9 @@ failure policy, or model/digest requirements.
 | Owner | Owns |
 | --- | --- |
 | Workload producer (e.g. AFW) | Logical pool IDs, exact requirements, opaque jobs, provenance |
-| WLO profile | Backend selection, worker bindings, capacity, budget declarations |
-| WLO runtime | Scheduling, state, resume identity, guarded fulfillment and paid budget lifecycle |
-| RPOF | Provider mechanics, fleet readiness, dispatch and independent resource guardian |
+| WLO profile | Historical v0.2 backend selection and worker bindings; retained RPOF declarations are read-only |
+| WLO runtime | Scheduling, state, resume identity, and local/fixed compatibility execution |
+| RPOF | Provider mechanics, fleet readiness, registry publication and independent resource guardian |
 
 `wlo-execution-plan/v0.2` retains v0.1 top-level and job fields. Each pool contains
 `pool_id`, optional `required_labels`, and optional `requirements` (exact Ollama model/digest plus optional context and GPU

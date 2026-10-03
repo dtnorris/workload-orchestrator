@@ -12,7 +12,9 @@ before accessing workers, creating output or running commands.
 `ExecutionProfile`, `PaidBudget`, historical contract validators and execution
 state/report/retry/import readers remain for inspection and audit. Historical
 v0.1/v0.2 plans and provider evidence are not migrated or rewritten. Local and
-fixed-remote profile execution remains supported.
+fixed-remote profile execution remains supported for v0.2 compatibility. v0.3
+rejects every execution profile so a compatibility overlay cannot silently
+replace its dynamic registry authority.
 
 The earlier budget, fulfillment, client, readiness and remote-execution documents
 are historical references; their old executable instructions are retired.

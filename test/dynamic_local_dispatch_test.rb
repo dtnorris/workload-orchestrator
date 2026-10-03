@@ -183,10 +183,14 @@ class DynamicLocalDispatchTest < Minitest::Test
     v02 = JSON.parse(@plan.bytes).merge("contract_version" => WorkloadOrchestrator::Plan::LOGICAL_CONTRACT_VERSION)
     static_plan = WorkloadOrchestrator::Plan.new(JSON.generate(v02))
     source = Source.new { snapshot(@records) }
-    [[@plan, nil], [@plan, source], [static_plan, source]].each do |plan, worker_source|
+
+    mixed_error = assert_raises(WorkloadOrchestrator::Error) { profile.bind(@plan) }
+    assert_includes mixed_error.message, "execution profiles are legacy v0.2 compatibility only"
+
+    [nil, source].each do |worker_source|
       error = assert_raises(WorkloadOrchestrator::Error) do
         WorkloadOrchestrator::Runner.new(
-          plan: profile.bind(plan), worker_source: worker_source,
+          plan: profile.bind(static_plan), worker_source: worker_source,
           workers: WorkloadOrchestrator::WorkerSet.new({}), workdir: @workdir, output_dir: @output
         )
       end
@@ -292,7 +296,7 @@ class DynamicLocalDispatchTest < Minitest::Test
                                         workdir: workdir, output_dir: output)
         raise "dynamic plan routed to legacy runner"
       rescue WorkloadOrchestrator::Error => error
-        raise unless error.message.include?("historical RPOF execution is retired")
+        raise unless error.message.include?("execution profiles are legacy v0.2 compatibility only")
       end
       runner = WorkloadOrchestrator::Runner.new(
         plan: WorkloadOrchestrator::Plan.load(plan_path), workers: WorkloadOrchestrator::WorkerSet.new({}),

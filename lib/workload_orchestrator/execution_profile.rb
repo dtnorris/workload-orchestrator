@@ -71,8 +71,13 @@ module WorkloadOrchestrator
     end
 
     def bind(plan)
-      unless plan.logical? && !plan.execution_profile
-        raise Error, "execution profiles require an unbound wlo-execution-plan/v0.2 or v0.3 plan"
+      if plan.priority_scheduling?
+        raise Error,
+              "wlo-execution-plan/v0.3 uses the provider-neutral dynamic worker registry; " \
+              "execution profiles are legacy v0.2 compatibility only"
+      end
+      unless plan.contract_version == Plan::LOGICAL_CONTRACT_VERSION && !plan.execution_profile
+        raise Error, "execution profiles require an unbound wlo-execution-plan/v0.2 plan"
       end
       rows = document.fetch("pools").to_h { |row| [row.fetch("pool_id"), row] }
       unless rows.keys.sort == plan.pools.map(&:id).sort

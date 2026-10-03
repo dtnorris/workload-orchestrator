@@ -43,6 +43,17 @@ class ExecutionProfileTest < Minitest::Test
     assert_nil plan.pools.first.max_concurrency
   end
 
+  def test_v03_cannot_be_rebound_through_a_legacy_execution_profile
+    document = Marshal.load(Marshal.dump(@document))
+    document["contract_version"] = WorkloadOrchestrator::Plan::PRIORITY_CONTRACT_VERSION
+    plan = WorkloadOrchestrator::Plan.new(JSON.generate(document))
+
+    error = assert_raises(WorkloadOrchestrator::Error) { profile.bind(plan) }
+
+    assert_includes error.message, "provider-neutral dynamic worker registry"
+    assert_includes error.message, "legacy v0.2 compatibility only"
+  end
+
   def test_local_and_fixed_remote_profiles_execute_opaque_jobs_with_same_plan_hash
     # These are command-worker fixtures, not real inference endpoints.
     original = File.binread(@plan_path)

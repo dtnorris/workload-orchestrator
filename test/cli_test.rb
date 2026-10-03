@@ -67,7 +67,6 @@ class CliTest < Minitest::Test
   end
 
   def test_plan_reports_v03_priority_scheduling
-    profile = write_local_execution_profile
     cases = {
       "grouped" => [
         [job("a", code: "exit 0", group_id: "adventure-a"),
@@ -81,8 +80,7 @@ class CliTest < Minitest::Test
     cases.each do |name, (jobs, expected)|
       plan = write_priority_plan(name, jobs)
       code, out, = run_cli(
-        "plan", plan, "--workdir", @workdir, "--workers-config", @workers_path,
-        "--execution-profile", profile
+        "plan", plan, "--workdir", @workdir
       )
 
       assert_equal 0, code
@@ -156,16 +154,6 @@ class CliTest < Minitest::Test
     document["contract_version"] = WorkloadOrchestrator::Plan::PRIORITY_CONTRACT_VERSION
     document["pools"] = [{ "pool_id" => "local-pool" }]
     File.write(path, "#{JSON.pretty_generate(document)}\n")
-    path
-  end
-
-  def write_local_execution_profile
-    path = File.join(@tmp, "execution-profile.json")
-    File.write(path, JSON.generate(
-      "contract_version" => "wlo-execution-profile/v0.1",
-      "pools" => [{ "pool_id" => "local-pool", "backend" => "local",
-                    "worker_names" => ["local"], "max_concurrency" => 1 }]
-    ))
     path
   end
 
