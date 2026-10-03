@@ -1,20 +1,18 @@
 contract_version: wlo-worker-sources/v0.2
 sources:
-  - name: local
+  - name: source-a
     policy: required
-    command: /absolute/path/to/local-ollama-workers/bin/low
+    command: /absolute/path/to/publisher-a/bin/publish-workers
     args:
       - workers
       - --json
     environment: {}
-    workdir: /absolute/path/to/local-ollama-workers
-  - name: remote
+    workdir: /absolute/path/to/publisher-a
+  - name: source-b
     policy: optional
-    command: /absolute/path/to/runpod-ollama-fleet/bin/rpof
+    command: /absolute/path/to/publisher-b/bin/publish-workers
     args:
       - workers
       - --json
-    environment:
-      RPOF_STATE_ROOT: /absolute/path/to/fleet-state
-      RPOF_STATE_REPO_ROOT: /absolute/path/to/runpod-ollama-fleet
-    workdir: /absolute/path/to/runpod-ollama-fleet
+    environment: {}
+    workdir: /absolute/path/to/publisher-b

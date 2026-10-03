@@ -112,7 +112,7 @@ class Dw22ProviderIndependenceTest < Minitest::Test
         raise "attempt worker evidence missing" unless rows.all? do |row|
           metadata = JSON.parse(File.read(File.join(output, "runs", row.fetch("job_id"), "metadata.json")))
           metadata.dig("worker_execution_identity", "endpoint") ==
-            observed.fetch(row.fetch("job_id")).fetch("AF_OLLAMA_BASE_URL") && metadata.key?("worker_snapshot")
+            observed.fetch(row.fetch("job_id")).fetch("WLO_WORKER_ENDPOINT") && metadata.key?("worker_snapshot")
         end
       end
 

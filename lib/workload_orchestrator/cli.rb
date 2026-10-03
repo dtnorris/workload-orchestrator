@@ -29,9 +29,9 @@ module WorkloadOrchestrator
       validate, plan,
       worker-check   ONE-SHOT INSPECTION. No workload or provider lifecycle is owned.
 
-    Paid teardown is a separate RPOF action. For campaign-owned capacity, use
-    `bin/rpof campaign stop ...` and verify provider absence; shell or terminal loss is
-    never a substitute for an explicit lifecycle command.
+    Capacity lifecycle is external to WLO. Use the applicable publisher/provider
+    tooling and verify resource absence; shell or terminal loss is never a
+    substitute for an explicit lifecycle command.
   HELP
 
   class CLI
@@ -127,7 +127,7 @@ module WorkloadOrchestrator
       if DynamicWorkerCLI.unbound_plan?(plan)
         raise Error,
               "dynamic v0.3 worker-check is not supported; inspect the registry source directly " \
-              "(for RPOF: bin/rpof workers --json)"
+              "with the configured publisher's own tooling"
       end
       plan.execution_profile&.ensure_runnable!
       workers = load_workers(options)
@@ -176,7 +176,7 @@ module WorkloadOrchestrator
       @out.puts "Detached manager started: PID #{record.fetch('pid')}"
       @out.puts "Manager log: #{record.fetch('log_path')}"
       @out.puts "The manager continues after this CLI or terminal exits; Ctrl-C here is not a workload pause."
-      @out.puts "WLO never tears down paid provider capacity; use the applicable RPOF teardown command."
+      @out.puts "WLO never tears down provider capacity; use the applicable provider tooling."
       @out.puts "Use summary to check readiness, progress and the final result."
       0
     end
@@ -588,7 +588,7 @@ module WorkloadOrchestrator
         run, start, resume and retry-failed. Retry also accepts --workers-config FILE.
         Provider capacity lifecycle is external to the v0.3 dynamic runtime.
         Dynamic v0.3 jobs run locally against the selected worker endpoint.
-        Historical RPOF profiles can be inspected but cannot be executed.
+        Historical provider-specific profiles can be inspected but cannot be executed.
 
         #{PROCESS_OWNERSHIP_HELP}
       HELP

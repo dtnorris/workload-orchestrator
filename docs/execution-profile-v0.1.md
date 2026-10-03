@@ -60,9 +60,9 @@ Both bindings require non-empty unique `worker_names`, a positive integer
 `max_concurrency` no greater than the number of names, and optionally
 `required_labels`. Profile labels add to plan labels. Workers are used in listed
 order, up to `max_concurrency`; all listed workers must pass existing readiness
-and zero-cost checks. Configure `base_url` and the job's endpoint environment
-consistently in the worker file (for AFW, `AF_OLLAMA_BASE_URL`). A fixed remote worker
-with positive declared hourly cost is still rejected.
+and zero-cost checks. Configure `base_url` and the application's endpoint
+environment consistently in the worker file. A fixed remote worker with positive
+declared hourly cost is still rejected.
 
 To select a fixed remote endpoint, copy the profile, change `backend` to
 `fixed_remote` and `worker_names` to the configured remote worker name. Reuse the

@@ -9,7 +9,7 @@ class ExecutionDoctorTest < Minitest::Test
     @root = Dir.mktmpdir("wlo-doctor-")
     @output = File.join(@root, "output")
     FileUtils.mkdir_p(@output)
-    @job_id = "batch39-adv0946-structural-openness"
+    @job_id = "opaque-job.7f4a"
     @plan_path = write_plan(@root, jobs: [job(@job_id, code: "exit 7")])
     @plan = WorkloadOrchestrator::Plan.load(@plan_path)
     write_state
@@ -19,12 +19,13 @@ class ExecutionDoctorTest < Minitest::Test
     FileUtils.rm_rf(@root)
   end
 
-  def test_failed_job_resolves_short_handle_and_exposes_one_action
+  def test_failed_job_resolves_exact_opaque_id_and_exposes_one_action
     write_jobs("failed", exit_status: 7)
     write_metadata("status" => "failed", "attempt" => 2, "worker" => "A2", "exit_status" => 7)
 
-    result = doctor.diagnose("0946-openness")
+    result = doctor.diagnose(@job_id)
 
+    assert_equal "wlo-execution-diagnostic/v0.1", result.fetch("contract_version")
     assert_equal @job_id, result.dig("subject", "id")
     assert_equal "command_failure", result.fetch("stage")
     assert_equal({ "action" => "inspect_job_logs" }, result.fetch("next_action"))
@@ -63,17 +64,36 @@ class ExecutionDoctorTest < Minitest::Test
   def test_logs_are_bounded_redacted_and_missing_streams_are_empty
     run = File.join(@output, "runs", @job_id)
     FileUtils.mkdir_p(run)
-    File.write(File.join(run, "stderr.log"), "first\nOPENAI_API_KEY=secret\nAuthorization: Bearer token\nlast\n")
+    File.write(
+      File.join(run, "stderr.log"),
+      "EXAMPLE_API_KEY=secret\nSERVICE_ACCESS_TOKEN: token\nAuthorization: Bearer bearer-value\nlast\n"
+    )
     write_metadata("status" => "failed", "attempt" => 3, "exit_status" => 1, "error" => "bad")
 
-    result = doctor.logs("0946-openness", lines: 3)
+    result = doctor.logs(@job_id, lines: 4)
 
-    assert_equal 3, result.dig("stderr", "lines").length
-    refute_includes result.dig("stderr", "lines").join("\n"), "secret"
-    refute_includes result.dig("stderr", "lines").join("\n"), "token"
+    assert_equal 4, result.dig("stderr", "lines").length
+    assert_equal [
+      "EXAMPLE_API_KEY=[REDACTED]",
+      "SERVICE_ACCESS_TOKEN: [REDACTED]",
+      "Authorization: Bearer [REDACTED]",
+      "last"
+    ], result.dig("stderr", "lines")
     assert_empty result.dig("stdout", "lines")
     assert_equal 3, result.dig("metadata", "attempt")
     assert_raises(WorkloadOrchestrator::Error) { doctor.logs(@job_id, lines: 0) }
+  end
+
+  def test_log_redaction_does_not_hide_ordinary_non_secret_variables
+    run = File.join(@output, "runs", @job_id)
+    FileUtils.mkdir_p(run)
+    lines = [
+      "TOKEN_COUNT=128", "KEYBOARD_LAYOUT=us", "PUBLIC_API_URL=https://example.invalid",
+      "MODEL_NAME=generic", "NOT_API_KEY_COUNT=3"
+    ]
+    File.write(File.join(run, "stderr.log"), "#{lines.join("\n")}\n")
+
+    assert_equal lines, doctor.logs(@job_id, lines: lines.length).dig("stderr", "lines")
   end
 
   def test_pending_priority_job_reports_worker_discovery_or_pause
@@ -102,7 +122,7 @@ class ExecutionDoctorTest < Minitest::Test
       "REGISTRY_INVALID_OR_STALE" => %w[registry_validation inspect_registry],
       "NO_COMPATIBLE_READY_WORKERS" => %w[worker_eligibility inspect_registry],
       "READY_WORKERS_INCOMPATIBLE" => %w[worker_eligibility inspect_registry],
-      "WORKERS_NOT_READY" => %w[worker_eligibility inspect_pod],
+      "WORKERS_NOT_READY" => %w[worker_eligibility inspect_worker],
       "ALL_COMPATIBLE_WORKERS_BUSY" => %w[worker_capacity wait_for_busy_worker],
       "PAUSED" => %w[paused resume_paused_execution],
       "CIRCUIT_BREAKER" => %w[circuit_breaker inspect_triggering_failure],
@@ -130,16 +150,10 @@ class ExecutionDoctorTest < Minitest::Test
     assert_equal before, after
   end
 
-  def test_unknown_and_ambiguous_handles_fail_closed
+  def test_unknown_id_fails_closed_without_domain_specific_parsing
     assert_raises(WorkloadOrchestrator::Error) { doctor.diagnose("missing") }
-
-    second = JSON.parse(File.read(@plan_path))
-    duplicate = second.fetch("jobs").first.merge("job_id" => "other-adv0946-visual-openness")
-    second.fetch("jobs") << duplicate
-    File.write(@plan_path, JSON.generate(second))
-    @plan = WorkloadOrchestrator::Plan.load(@plan_path)
     error = assert_raises(WorkloadOrchestrator::Error) { doctor.diagnose("0946-openness") }
-    assert_includes error.message, "ambiguous"
+    assert_includes error.message, "unknown job id"
   end
 
   private

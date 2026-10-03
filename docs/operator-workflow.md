@@ -21,47 +21,46 @@ domain ownership:
 
 | Command | Classification | What remains after return | Ctrl-C / terminal loss | Intentional different action |
 | --- | --- | --- | --- | --- |
-| `run`, `resume` | FOREGROUND WORK OWNER | No WLO manager is detached. | Ctrl-C stops new dispatch, wakes polling, sends TERM to each execution-owned job process group, escalates surviving groups to KILL after one second, reaps direct children, and retains partial output plus `interrupted` attempt evidence. A second Ctrl-C skips the remaining grace interval. | Use `pause --output OUTPUT` for a graceful drain that never signals running jobs. Use RPOF separately for paid teardown. |
-| `start` | DETACHED WORK LAUNCHER | The manager owns execution and continues in its own Unix session after the initiating CLI or terminal exits. | Ctrl-C after startup acknowledgement affects only the shell, not the manager. Abrupt manager death has no crash recovery or child-cancellation guarantee. | Use `pause` for WLO work. For a production campaign, use `rpof campaign stop` for capacity. |
-| `watch` | READ-ONLY OBSERVER | Any foreground or detached WLO runner, jobs, RPOF guardian, tunnels and provider resources continue unchanged. | Ctrl-C closes only the view. It does not pause/cancel work and does not tear down capacity. | Use `pause` or the applicable RPOF teardown command. |
-| `status`, `summary` | ONE-SHOT INSPECTION | All existing execution and provider processes/resources continue. | Interrupting the request has no lifecycle meaning. | Use `pause` or RPOF teardown explicitly. |
-| `pause` | CONTROL REQUEST | Running jobs and their runner remain until the existing pause contract drains them; pending jobs stay retained. | Ctrl-C after the request is durable does not strengthen it. The command never signals RPOF resources. | Wait for `running=0` and `executor inactive`; use RPOF separately for paid teardown. |
+| `run`, `resume` | FOREGROUND WORK OWNER | No WLO manager is detached. | Ctrl-C stops new dispatch, wakes polling, sends TERM to each execution-owned job process group, escalates surviving groups to KILL after one second, reaps direct children, and retains partial output plus `interrupted` attempt evidence. A second Ctrl-C skips the remaining grace interval. | Use `pause --output OUTPUT` for a graceful drain that never signals running jobs. Use provider tooling separately for capacity teardown. |
+| `start` | DETACHED WORK LAUNCHER | The manager owns execution and continues in its own Unix session after the initiating CLI or terminal exits. | Ctrl-C after startup acknowledgement affects only the shell, not the manager. Abrupt manager death has no crash recovery or child-cancellation guarantee. | Use `pause` for WLO work and the applicable provider command for capacity. |
+| `watch` | READ-ONLY OBSERVER | Any foreground or detached WLO runner, jobs, publisher processes, and provider resources continue unchanged. | Ctrl-C closes only the view. It does not pause/cancel work and does not tear down capacity. | Use `pause` or the applicable provider teardown command. |
+| `status`, `summary` | ONE-SHOT INSPECTION | All existing execution and provider processes/resources continue. | Interrupting the request has no lifecycle meaning. | Use `pause` or provider teardown explicitly. |
+| `pause` | CONTROL REQUEST | Running jobs and their runner remain until the existing pause contract drains them; pending jobs stay retained. | Ctrl-C after the request is durable does not strengthen it. The command never signals provider resources. | Wait for `running=0` and `executor inactive`; use provider tooling separately for capacity teardown. |
 | `retry-failed` | CONTROL REQUEST | Execution remains paused with selected failures queued. No runner is launched. | Interrupting the CLI is not execution cancellation or provider teardown. | Use `start --resume` or `resume` to run queued work. |
-| `import-terminal` | CONTROL REQUEST | Imported terminal evidence remains; no command or runner is launched. | Interrupting the request does not stop other work or resources. | Use normal WLO run/resume and RPOF lifecycle commands separately. |
-| `validate`, `plan`, `worker-check` | ONE-SHOT INSPECTION | No WLO execution owner is created. | Ctrl-C only interrupts the inspection/check. | Use `run`/`start` to execute; use RPOF to change capacity. |
+| `import-terminal` | CONTROL REQUEST | Imported terminal evidence remains; no command or runner is launched. | Interrupting the request does not stop other work or resources. | Use normal WLO run/resume and provider lifecycle commands separately. |
+| `validate`, `plan`, `worker-check` | ONE-SHOT INSPECTION | No WLO execution owner is created. | Ctrl-C only interrupts the inspection/check. | Use `run`/`start` to execute; use publisher/provider tooling to change capacity. |
 
-The cross-repository rule is absolute: a WLO pause, foreground cancellation,
-runner exit, shell exit or terminal loss is not an RPOF campaign stop. WLO never
-proves provider absence. For campaign-owned paid capacity, request teardown with
-`bin/rpof campaign stop ...`, then use campaign status until the budget is
-`CLOSED` and provider absence is verified.
+The component boundary is absolute: a WLO pause, foreground cancellation,
+runner exit, shell exit, or terminal loss is not a provider teardown request.
+WLO never proves provider absence. Use the applicable provider's own lifecycle
+and verification tooling.
 
 ## Production v0.3 dynamic execution
 
-Start any RPOF capacity campaign separately. Configure its registry publisher,
-the local publisher, or both as named WLO worker sources. WLO only polls their
-provider-neutral registry outputs; it does not create, retain, resize or tear
-down capacity and does not send a workload request to RPOF.
+Establish any needed capacity separately and configure one or more publishers
+as named WLO worker sources. WLO only polls their provider-neutral registry
+outputs; it does not create, retain, resize, or tear down capacity and does not
+send a workload request to a provider.
 
 Inspect an unbound v0.3 plan without a profile, worker configuration or live
 registry:
 
 ```bash
-bin/wlo plan PLAN.json --workdir /absolute/path/to/af-workloads
+bin/wlo plan PLAN.json --workdir /absolute/path/to/workload
 ```
 
 Run the plan against the configured local, remote or mixed registry set:
 
 ```bash
 bin/wlo run PLAN.json \
-  --workdir /absolute/path/to/af-workloads \
+  --workdir /absolute/path/to/workload \
   --output /absolute/path/to/output \
   --worker-sources-config /absolute/path/to/worker-sources.yml
 ```
 
-See [named worker sources](worker-sources.md) and the checked-in local-only,
-remote-only and mixed examples. WLO invokes each configured argv directly
-without a shell on every poll. Each stdout must be one complete
+See [named worker sources](worker-sources.md) and the checked-in single-source
+and multi-source examples. WLO invokes each configured argv directly without a
+shell on every poll. Each stdout must be one complete
 `dynamic-worker-registry/v0.1` snapshot with a unique `registry_id`. Nonzero
 exit, malformed output, duplicate namespaces, stale/replayed revision or
 invalid registry data halts dispatch; there is no legacy fallback. The older
@@ -70,8 +69,8 @@ single-command flags remain available only as a one-source compatibility path.
 No `--execution-profile`, `--workers-config`, `--paid-budget`,
 `--authorize-paid-rpof` or workload-dispatch `--rpof-executable` option is
 used for this path. WLO selects a compatible READY worker, persists its exact
-identity, launches the scorer locally and injects its endpoint as
-`AF_OLLAMA_BASE_URL`.
+identity, launches the workload command locally and injects its endpoint as
+`WLO_WORKER_ENDPOINT`.
 
 ## Detached execution
 
@@ -183,8 +182,8 @@ resume. Completed attempts and never-dispatched pending jobs are preserved.
 
 This guarantee applies when SIGINT/SIGTERM reaches the foreground WLO process.
 It does not cover SIGKILL, power or kernel failure, or terminal loss that sends
-no signal. Cancellation never contacts RPOF and never changes provider
-capacity.
+no signal. Cancellation never contacts a publisher or provider and never
+changes provider capacity.
 
 ## Pause, resume and retry
 

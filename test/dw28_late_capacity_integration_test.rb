@@ -357,7 +357,7 @@ class Dw28LateCapacityIntegrationTest < Minitest::Test
     assert_equal rpof_registry_class.capability_fingerprint(snapshot),
                  snapshot.fetch("capability_fingerprint")
     assert_equal "claimed", observed.dig("claim", "state")
-    assert_equal expected_identity.fetch("endpoint"), observed.dig("environment", "AF_OLLAMA_BASE_URL")
+    assert_equal expected_identity.fetch("endpoint"), observed.dig("environment", "WLO_WORKER_ENDPOINT")
     assert_equal "running", observed.dig("execution", "status")
     assert_equal plan.id, observed.dig("execution", "plan_id")
     refute metadata.key?("remote_request")

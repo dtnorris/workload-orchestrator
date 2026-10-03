@@ -6,9 +6,16 @@ module WorkloadOrchestrator
   # Read-only job explanation over the retained execution report, FO-04 pool
   # status and per-attempt evidence. It does not own scheduling or provider state.
   class ExecutionDoctor
+    CONTRACT_VERSION = "wlo-execution-diagnostic/v0.1"
     DEFAULT_LOG_LINES = 15
     MAX_LOG_LINES = 200
     MAX_TAIL_BYTES = 262_144
+    SECRET_ENV_ASSIGNMENT = /
+      \b([A-Z][A-Z0-9_]*(?:
+        API_KEY|SECRET_KEY|ACCESS_KEY_ID|SECRET_ACCESS_KEY|
+        AUTH_TOKEN|ACCESS_TOKEN|BEARER_TOKEN|PASSWORD
+      ))(\s*[=:]\s*)\S+
+    /ix
     STAGES = %w[
       dependency_waiting worker_discovery registry_validation worker_eligibility
       worker_capacity paused circuit_breaker dispatch command_launch
@@ -16,7 +23,7 @@ module WorkloadOrchestrator
       worker_generation owner_process healthy unknown
     ].freeze
     ACTIONS = %w[
-      inspect_registry inspect_pod wait_for_busy_worker resume_paused_execution
+      inspect_registry inspect_worker wait_for_busy_worker resume_paused_execution
       inspect_triggering_failure inspect_dispatch_halt inspect_job_logs
       review_interrupted_attempt inspect_worker_generation inspect_manager
       inspect_execution_status
@@ -28,7 +35,7 @@ module WorkloadOrchestrator
       "REGISTRY_INVALID_OR_STALE" => ["registry_validation", nil, "inspect_registry"],
       "NO_COMPATIBLE_READY_WORKERS" => ["worker_eligibility", "No READY worker matches this pool.", "inspect_registry"],
       "READY_WORKERS_INCOMPATIBLE" => ["worker_eligibility", "READY workers exist, but none matches this pool.", "inspect_registry"],
-      "WORKERS_NOT_READY" => ["worker_eligibility", "Compatible workers are retained as NOT_READY.", "inspect_pod"],
+      "WORKERS_NOT_READY" => ["worker_eligibility", "Compatible workers are retained as NOT_READY.", "inspect_worker"],
       "ALL_COMPATIBLE_WORKERS_BUSY" => ["worker_capacity", "All compatible READY workers are busy.", "wait_for_busy_worker"],
       "PAUSED" => ["paused", "Execution is paused; new dispatch is stopped.", "resume_paused_execution"],
       "CIRCUIT_BREAKER" => ["circuit_breaker", "The circuit breaker stopped new dispatch.", "inspect_triggering_failure"],
@@ -69,29 +76,18 @@ module WorkloadOrchestrator
       raise Error, "--lines must be between 1 and #{MAX_LOG_LINES}"
     end
 
-    def self.short_handle(job_id)
-      match = job_id.to_s.match(/(?:\A|-)adv(\d+)-(.+)\z/)
-      return job_id.to_s unless match
-
-      "#{match[1]}-#{match[2].split('-').last}"
-    end
-
     private
 
     def resolve(handle)
       exact = @plan.jobs.find { |job| job.id == handle.to_s }
       return exact if exact
 
-      matches = @plan.jobs.select { |job| self.class.short_handle(job.id) == handle.to_s }
-      raise Error, "unknown job handle #{handle.inspect}" if matches.empty?
-      if matches.length > 1
-        raise Error, "ambiguous job handle #{handle.inspect}: #{matches.map(&:id).sort.join(', ')}"
-      end
-      matches.first
+      raise Error, "unknown job id #{handle.inspect}"
     end
 
     def base_result(job, supplied, row)
       {
+        "contract_version" => CONTRACT_VERSION,
         "subject" => subject(job, supplied), "stage" => "unknown",
         "status" => row.fetch("status"),
         "summary" => "Retained evidence does not identify one failing stage.",
@@ -100,7 +96,7 @@ module WorkloadOrchestrator
     end
 
     def subject(job, supplied)
-      { "type" => "job", "handle" => self.class.short_handle(job.id), "id" => job.id,
+      { "type" => "job", "handle" => job.id, "id" => job.id,
         "supplied_handle" => supplied.to_s }
     end
 
@@ -198,7 +194,7 @@ module WorkloadOrchestrator
       }
       evidence["detail"] = pool["detail"] if pool["detail"]
       action_extra = {}
-      if action_id == "inspect_pod" && pool.fetch("relevant_worker_ids").length == 1
+      if action_id == "inspect_worker" && pool.fetch("relevant_worker_ids").length == 1
         action_extra["worker_id"] = pool.fetch("relevant_worker_ids").first
       end
       result.merge!("stage" => stage, "summary" => summary,
@@ -269,9 +265,8 @@ module WorkloadOrchestrator
     end
 
     def redact(lines)
-      names = /(RUNPOD_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY|GOOGLE_API_KEY|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY)/i
       lines.map do |line|
-        line.gsub(/(#{names.source}\s*[=:]\s*)\S+/i, "\\1[REDACTED]")
+        line.gsub(SECRET_ENV_ASSIGNMENT, "\\1\\2[REDACTED]")
             .gsub(/(Authorization:\s*Bearer\s+)\S+/i, "\\1[REDACTED]")
       end
     end

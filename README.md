@@ -27,17 +27,16 @@ compatibility remain available during migration. WLO provides:
 - immutable plan/output identity;
 - execution status reporting;
 - capability-based dynamic scheduling across heterogeneous workers; and
-- Mac-local command execution against the exact selected worker endpoint.
+- local command execution against the exact selected worker endpoint.
 
-Provider capacity campaigns run independently in RPOF. WLO consumes their
-provider-neutral worker registries, along with independently published local
-registries, and owns no provider budget, admission, resource creation,
-retention or teardown decision.
+Worker publishers and any backing provider lifecycle run independently of WLO.
+WLO consumes their registries and owns no provider budget, admission, resource
+creation, retention, scaling, or teardown decision.
 
-WLO does not interpret the domain meaning of a workload or its results. AFW
-owns AdventureFinder selection, qualification, frozen scoring contracts and
-provenance. RPOF owns provider fleets, readiness/bootstrap/tunnels, leases,
-cost safeguards, scaling, replacement and teardown.
+WLO does not interpret the domain meaning of a workload or its results. A
+workload producer owns domain selection, policy, provenance, adapters, and
+result interpretation. Each worker publisher or provider tool owns its own
+capacity lifecycle.
 
 ## Provider-neutral workloads
 
@@ -48,7 +47,7 @@ durable checkpoint. WLO never creates a merged or synthetic registry identity.
 It selects eligible workers, persists exact attempt bindings and runs each job
 command locally with the selected endpoint. Zero compatible workers leaves the
 execution alive and polling. Local stdout, stderr, exit status and executor
-exceptions determine command results; no RPOF workload request or result
+exceptions determine command results; no provider workload request or result
 translation participates. The CLI accepts a strict named-source configuration
 through `--worker-sources-config`. The single-command
 `--worker-source-command` / `--worker-source-arg` form remains a compatibility
@@ -91,8 +90,7 @@ Git.
 ## Generic compatibility example
 
 The bundled `hello-plan.json` demonstrates the retained static v0.1 command
-runner. It is not the production AdventureFinder path; new AFW production work
-uses an unbound v0.3 plan and a dynamic worker source.
+runner without any domain-specific adapter.
 
 Validate the bundled generic example:
 
@@ -293,4 +291,5 @@ Historical RPOF profiles, budget declarations, dispatch contracts and persisted
 execution state remain inspectable. WLO no longer contains the provider clients,
 capacity fulfillment, paid lifecycle or remote runner. The old
 `--rpof-executable`, `--paid-budget` and `--authorize-paid-rpof` flags are removed.
-Current execution uses the dynamic worker registry; RPOF owns capacity safety.
+Current execution uses the dynamic worker registry; provider tooling owns
+capacity safety.

@@ -103,7 +103,7 @@ class DynamicCliTest < Minitest::Test
     code, _out, error = run_cli("worker-check", @plan)
 
     assert_equal 1, code
-    assert_includes error, "bin/rpof workers --json"
+    assert_includes error, "configured publisher's own tooling"
     refute File.exist?(@output)
   end
 
@@ -164,7 +164,7 @@ class DynamicCliTest < Minitest::Test
       "jobs" => [{
         "job_id" => "job-1",
         "pool_id" => "dynamic-pool",
-        "argv" => [RbConfig.ruby, "-e", "puts ENV.fetch('AF_OLLAMA_BASE_URL')"],
+        "argv" => [RbConfig.ruby, "-e", "puts ENV.fetch('WLO_WORKER_ENDPOINT')"],
         "env" => {},
         "depends_on_job_ids" => []
       }]

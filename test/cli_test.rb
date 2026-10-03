@@ -116,8 +116,8 @@ class CliTest < Minitest::Test
     assert_includes out, "Ctrl-C closes only the view"
     assert_includes out, "Use `wlo pause --output DIR` for an intentional graceful workload pause"
     assert_includes out, "WLO never tears down paid provider capacity"
-    assert_includes out, "campaign stop"
-    assert_includes out, "verify provider absence"
+    assert_includes out, "applicable publisher/provider"
+    assert_includes out, "verify resource absence"
     assert_includes out, "bin/wlo doctor"
     assert_includes out, "bin/wlo logs"
   end

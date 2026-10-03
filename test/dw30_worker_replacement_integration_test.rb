@@ -371,7 +371,7 @@ class Dw30WorkerReplacementIntegrationTest < Minitest::Test
     assert_equal rpof_identity, identity.slice("worker_id", "generation_id")
     assert_equal identity.fetch("generation_id"), snapshot.fetch("generation_id")
     assert_equal identity.fetch("capability_fingerprint"), snapshot.fetch("capability_fingerprint")
-    assert_equal identity.fetch("endpoint"), observed.dig("environment", "AF_OLLAMA_BASE_URL")
+    assert_equal identity.fetch("endpoint"), observed.dig("environment", "WLO_WORKER_ENDPOINT")
     assert_equal "claimed", observed.dig("claim", "state")
     assert_equal "running", observed.dig("execution", "status")
     assert_equal plan.id, observed.dig("execution", "plan_id")
@@ -440,7 +440,7 @@ class Dw30WorkerReplacementIntegrationTest < Minitest::Test
     assert_equal replacement_identity,
                  expected_replacement.slice("worker_id", "generation_id")
     refute_equal original_identity.fetch("generation_id"), expected_replacement.fetch("generation_id")
-    assert_equal expected_replacement.fetch("endpoint"), observed.dig("environment", "AF_OLLAMA_BASE_URL")
+    assert_equal expected_replacement.fetch("endpoint"), observed.dig("environment", "WLO_WORKER_ENDPOINT")
     assert_equal "complete", metadata.fetch("status")
     assert_equal 2, metadata.fetch("attempt")
     assert_equal expected_replacement, metadata.fetch("worker_execution_identity")

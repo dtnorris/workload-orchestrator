@@ -365,7 +365,7 @@ class Dw29FourPoolConcurrencyIntegrationTest < Minitest::Test
       assert_equal model_digest(model), snapshot.dig("capabilities", "ollama", "models", 0, "digest")
       assert_equal worker.fetch("generation_id"), identity.fetch("generation_id")
       assert_equal worker.fetch("endpoint"), identity.fetch("endpoint")
-      assert_equal worker.fetch("endpoint"), observed.dig("environment", "AF_OLLAMA_BASE_URL")
+      assert_equal worker.fetch("endpoint"), observed.dig("environment", "WLO_WORKER_ENDPOINT")
       assert_equal 1, metadata.dig("worker_registry_binding", "registry_revision")
       assert metadata.key?("worker_snapshot")
       refute metadata.key?("remote_request")

@@ -34,14 +34,14 @@ class MultiSourceWorkerTest < Minitest::Test
     FileUtils.remove_entry(@tmp)
   end
 
-  def test_local_remote_mixed_and_more_than_two_sources_are_configuration_not_registry_identity
-    %w[local remote].each do |name|
+  def test_arbitrary_source_names_do_not_create_provider_semantics
+    %w[alpha archive-zone].each do |name|
       set = load_config([source_row(name)])
       assert_equal [name], set.entries.map(&:name)
     end
 
-    mixed = load_config(%w[local remote].map { |name| source_row(name) })
-    assert_equal %w[local remote], mixed.entries.map(&:name)
+    mixed = load_config(%w[alpha archive-zone].map { |name| source_row(name) })
+    assert_equal %w[alpha archive-zone], mixed.entries.map(&:name)
     assert_equal 3, load_config(%w[a b c].map { |name| source_row(name) }).entries.length
     assert(mixed.entries.all? { |entry| entry.source.is_a?(WorkloadOrchestrator::CommandWorkerSource) })
   end

@@ -72,7 +72,7 @@ module WorkloadOrchestrator
       @out.print("\e[2J\e[H") if clear
       return render_dashboard(document) unless @verbose
 
-      @out.puts "Batch: #{document.fetch('plan_id')}"
+      @out.puts "Plan: #{document.fetch('plan_id')}"
       @out.puts "State: #{document.fetch('display_state')}"
       @out.puts progress_line(document.fetch("counts"))
       @out.puts "Terminal: #{document.fetch('terminal')} / #{document.fetch('total')} " \

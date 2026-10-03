@@ -2,11 +2,11 @@
 
 WLO consumes provider-neutral `WorkerSource` snapshots, persists the selected
 `RegistryWorker` binding, and executes opaque jobs locally with that endpoint in
-`AF_OLLAMA_BASE_URL`. Scheduling, polling, worker-loss evidence, retries, live
+`WLO_WORKER_ENDPOINT`. Scheduling, polling, worker-loss evidence, retries, live
 progress and watch behavior are unchanged.
 
 The WLO-owned paid-capacity runner, clients, fulfillment, readiness and admission
-implementations are removed. Historical RPOF profiles are rejected by execution
+implementations are removed. Historical provider-specific profiles are rejected by execution
 and worker-check, while profile/plan validation and reporting remain available.
 
 The lazy loader exposes only `RpofContract` and `PaidBudget` historical readers.

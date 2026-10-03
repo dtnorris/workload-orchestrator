@@ -111,7 +111,7 @@ class RunnerTest < Minitest::Test
   end
 
   def test_static_job_endpoint_and_unrelated_environment_are_unchanged
-    supplied = { "AF_OLLAMA_BASE_URL" => "http://static.invalid:11434",
+    supplied = { "APPLICATION_ENDPOINT" => "http://static.invalid:11434",
                  "KEEP" => "static", "REMOVE" => nil }
     plan = load_plan([job("static", code: "puts :ok", env: supplied)])
     observed = nil

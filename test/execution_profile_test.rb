@@ -74,14 +74,14 @@ class ExecutionProfileTest < Minitest::Test
 
   def test_fixed_remote_uses_selected_endpoint_and_preserves_exact_digest_gate
     @document["pools"][0]["requirements"] = ollama_pool["requirements"]
-    @document["jobs"][0]["argv"] = [RbConfig.ruby, "-e", "puts ENV.fetch('AF_OLLAMA_BASE_URL')"]
+    @document["jobs"][0]["argv"] = [RbConfig.ruby, "-e", "puts ENV.fetch('APPLICATION_ENDPOINT')"]
     plan = WorkloadOrchestrator::Plan.new(JSON.generate(@document))
     @profile["pools"][0] = binding_for("fixed_remote")
     bound = profile.bind(plan)
     endpoint = "http://remote.example.invalid:11434"
     workers = WorkloadOrchestrator::WorkerSet.new("local2" => {
       "type" => "ollama", "base_url" => endpoint, "hourly_rate_usd" => 0,
-      "job_env" => { "AF_OLLAMA_BASE_URL" => endpoint }
+      "job_env" => { "APPLICATION_ENDPOINT" => endpoint }
     })
     requests = []
     checker = WorkloadOrchestrator::WorkerCheck.new(fetch_json: lambda do |url, path|

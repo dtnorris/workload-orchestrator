@@ -95,19 +95,19 @@ class DynamicSchedulingRunnerTest < Minitest::Test
     assert_assignments_match_pools(plan, records)
     assert_equal parent_environment, ENV.to_h
     claims_seen.each do |job_id, identity|
-      assert_equal({ "AF_OLLAMA_BASE_URL" => identity.fetch("endpoint") }, environments_seen.fetch(job_id))
-      assert_includes metadata_for(job_id).fetch("environment_keys"), "AF_OLLAMA_BASE_URL"
+      assert_equal({ "WLO_WORKER_ENDPOINT" => identity.fetch("endpoint") }, environments_seen.fetch(job_id))
+      assert_includes metadata_for(job_id).fetch("environment_keys"), "WLO_WORKER_ENDPOINT"
       assert_empty plan.jobs.find { |entry| entry.id == job_id }.env
     end
-    assert_equal 6, environments_seen.values.map { |env| env.fetch("AF_OLLAMA_BASE_URL") }.uniq.length
+    assert_equal 6, environments_seen.values.map { |env| env.fetch("WLO_WORKER_ENDPOINT") }.uniq.length
   end
 
   def test_selected_endpoint_overrides_job_env_after_binding_is_durable
     row = job("selected", "model")
-    supplied = { "AF_OLLAMA_BASE_URL" => "http://wrong.invalid:11434",
+    supplied = { "WLO_WORKER_ENDPOINT" => "http://wrong.invalid:11434",
                  "KEEP" => "value", "REMOVE" => nil }
     row["env"] = supplied
-    row["argv"] = [RbConfig.ruby, "-e", "puts ENV.fetch('AF_OLLAMA_BASE_URL')"]
+    row["argv"] = [RbConfig.ruby, "-e", "puts ENV.fetch('WLO_WORKER_ENDPOINT')"]
     plan = build_plan(pools: [pool("model")], jobs: [row])
     worker_a = worker_record("worker-a", "model")
     worker_b = worker_record("worker-b", "model")
@@ -125,11 +125,15 @@ class DynamicSchedulingRunnerTest < Minitest::Test
     assert_equal "running", metadata.fetch("status")
     assert_equal 1, metadata.fetch("attempt")
     assert_equal "worker-a", metadata.fetch("worker")
+    assert_equal({
+                   "contract_version" => "wlo-attempt-placement/v0.1",
+                   "endpoint_environment_variable" => "WLO_WORKER_ENDPOINT"
+                 }, metadata.fetch("placement"))
     snapshot = metadata.fetch("worker_snapshot")
     assert_equal worker_a.fetch("labels"), snapshot.fetch("labels")
     assert_equal worker_a.fetch("capabilities"), snapshot.fetch("capabilities")
     assert_equal worker_a.fetch("capability_fingerprint"), snapshot.fetch("capability_fingerprint")
-    assert_equal environment.fetch("AF_OLLAMA_BASE_URL"), snapshot.fetch("endpoint")
+    assert_equal environment.fetch("WLO_WORKER_ENDPOINT"), snapshot.fetch("endpoint")
     assert_equal "READY", snapshot.fetch("state")
     assert_equal 1, snapshot.fetch("registry_revision")
     identity = metadata.fetch("worker_execution_identity")
@@ -137,10 +141,28 @@ class DynamicSchedulingRunnerTest < Minitest::Test
     assert_equal worker_a.fetch("generation_id"), identity.fetch("generation_id")
     assert_equal worker_a.fetch("capability_fingerprint"), identity.fetch("capability_fingerprint")
     assert_equal worker_a.fetch("endpoint"), identity.fetch("endpoint")
-    assert_equal supplied.merge("AF_OLLAMA_BASE_URL" => identity.fetch("endpoint")), environment
+    assert_equal supplied.merge("WLO_WORKER_ENDPOINT" => identity.fetch("endpoint")), environment
     assert_equal environment.keys.sort, metadata.fetch("environment_keys")
     assert_equal supplied, plan.jobs.first.env
     assert_equal "#{worker_a.fetch('endpoint')}\n", File.read(File.join(@output, "runs/selected/stdout.log"))
+  end
+
+  def test_selected_endpoint_cannot_be_cleared_by_job_environment
+    row = job("cannot-clear", "model")
+    row["env"] = { "WLO_WORKER_ENDPOINT" => nil }
+    plan = build_plan(pools: [pool("model")], jobs: [row])
+    worker = worker_record("worker-a", "model")
+    observed = nil
+    executor = lambda do |environment, *_argv, **_options|
+      observed = environment.dup
+      command_result
+    end
+    runner = build_runner(
+      plan, SequenceSource.new(snapshot(revision: 1, workers: [worker])), executor:, sleeper: nil
+    )
+
+    assert_equal "completed", runner.run
+    assert_equal worker.fetch("endpoint"), observed.fetch("WLO_WORKER_ENDPOINT")
   end
 
   def test_zero_worker_startup_assigns_when_worker_appears_later
@@ -606,10 +628,10 @@ class DynamicSchedulingRunnerTest < Minitest::Test
     assert_equal "worker_generation_replaced", metadata.dig("evidence", "reason")
     assert_equal "complete", metadata.dig("late_evidence", 0, "status")
     assert_nil runner.store.metadata_for(plan.jobs.last)
-    assert_equal [worker.fetch("endpoint")], environments.map { |env| env.fetch("AF_OLLAMA_BASE_URL") }
+    assert_equal [worker.fetch("endpoint")], environments.map { |env| env.fetch("WLO_WORKER_ENDPOINT") }
     assert_equal worker.fetch("generation_id"), metadata.dig("worker_execution_identity", "generation_id")
     assert_equal worker.fetch("endpoint"), metadata.dig("worker_execution_identity", "endpoint")
-    refute_equal replacement.fetch("endpoint"), environments.first.fetch("AF_OLLAMA_BASE_URL")
+    refute_equal replacement.fetch("endpoint"), environments.first.fetch("WLO_WORKER_ENDPOINT")
   end
 
   def test_resume_preserves_running_binding_without_redispatch

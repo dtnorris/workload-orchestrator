@@ -173,7 +173,8 @@ module WorkloadOrchestrator
         job: job,
         worker_name: worker.name,
         environment_keys: environment_keys,
-        worker_binding: nil
+        worker_binding: nil,
+        placement: nil
       )
       started_at
     end
@@ -474,6 +475,7 @@ module WorkloadOrchestrator
       end
 
       keys = %w[worker_execution_identity worker_registry_binding worker_snapshot]
+      keys << "placement" if prior.key?("placement")
       return if keys.all? { |key| prior[key] == value[key] }
 
       raise Error, "immutable dynamic worker evidence conflicts with recorded attempt"

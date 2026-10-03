@@ -10,7 +10,7 @@ produced a workload or interpret domain-specific results.
 
 ## Ownership boundary
 
-Upstream workload systems such as AFW own:
+Upstream workload producers own:
 
 - domain-specific selection and policy;
 - compilation of domain intent into executable jobs;
@@ -37,12 +37,10 @@ WLO owns:
 - execution-only status reporting;
 - immutable attempt-local worker identity and registry evidence.
 
-RPOF owns RunPod fleet/resource mechanics, model/bootstrap readiness, tunnels,
-leases and cost safeguards, provider scaling/replacement, campaign admission
-and teardown. It publishes ready workers through the provider-neutral registry
-API that WLO owns. Local and future provider publishers implement that same
-API independently. WLO reacts only to their registries and never repairs
-provider infrastructure.
+Worker publishers and provider tools own resource mechanics, readiness,
+leases, cost safeguards, scaling/replacement, admission, and teardown. They
+publish ready workers through the provider-neutral registry API that WLO owns.
+WLO reacts only to registries and never repairs provider infrastructure.
 
 One heterogeneous v0.3 plan becomes one WLO execution, scheduler and store.
 Jobs from every logical pool coexist in that execution; WLO matches each
@@ -96,12 +94,12 @@ configured worker concurrency within an executor is unchanged.
 
 ## Capacity boundary
 
-The v0.3 production runtime has no paid-capacity authority. RPOF independently
-enforces cumulative spend, runtime deadlines, leases, admission and guardian
-cleanup. WLO may pause, stop or crash, but those events do not create, retain or
-destroy provider resources and are not a paid-safety boundary. RPOF's original
-campaign cumulative cap, runtime deadline, hourly cap, worker limit and
-guardian remain authoritative after WLO exits. An empty or incompatible
+The v0.3 runtime has no paid-capacity authority. Provider tooling independently
+enforces any cumulative spend, runtime deadlines, leases, admission, and
+cleanup. WLO may pause, stop, or crash, but those events do not create, retain,
+or destroy provider resources and are not a paid-safety boundary. The
+provider's original limits and cleanup authority remain active after WLO exits.
+An empty or incompatible
 registry is the normal `waiting_for_capacity` state: WLO keeps polling and
 dispatches nothing.
 
@@ -116,13 +114,13 @@ profile is explicitly used. See [legacy-rpof-compatibility.md](legacy-rpof-compa
 The production provider-neutral handoff is a v0.3 logical plan plus one or more
 named `WorkerSource` entries. Each publisher keeps its own `registry_id`,
 revision sequence and durable checkpoint. WLO schedules across the union and
-never rewrites those namespaces behind a synthetic front door. AFW emits no
-provider or resource identity. WLO binds each attempt to a validated registry
+never rewrites those namespaces behind a synthetic front door. The workload
+plan contains no provider or resource identity. WLO binds each attempt to a validated registry
 worker and freezes that identity and snapshot as execution evidence. The
 immutable identity is `registry_id`, `worker_id`, `generation_id`, `endpoint`
 and `capability_fingerprint`. WLO starts from the
 ordinary inherited process environment, applies the job environment, then
-injects the selected attempt's `AF_OLLAMA_BASE_URL` last. Worker disappearance
+injects the selected attempt's `WLO_WORKER_ENDPOINT` last. Worker disappearance
 or replacement fails the bound attempt in doubt and halts dispatch; a new
 generation may receive only future work. The v0.2 execution-profile overlay
 remains compatibility only; see

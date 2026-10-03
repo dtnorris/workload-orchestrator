@@ -12,7 +12,7 @@ module WorkloadOrchestrator
   module AttemptPersistence
     private
 
-    def persist_running!(job:, worker_name:, environment_keys:, worker_binding:)
+    def persist_running!(job:, worker_name:, environment_keys:, worker_binding:, placement: nil)
       started_at = Time.now
       attempt_id = nil
       with_lock do
@@ -32,6 +32,7 @@ module WorkloadOrchestrator
           "environment_keys" => environment_keys.sort
         }
         document.merge!(worker_binding.metadata) if worker_binding
+        document["placement"] = placement if placement
         FileUtils.mkdir_p(run_dir(job))
         write_json(metadata_path(job), document)
         rebuild_jobs_unlocked
@@ -53,7 +54,7 @@ module WorkloadOrchestrator
   module DynamicAttemptState
     # The returned token is derived from metadata durably written before
     # dispatch. The exact token must accompany the attempt's terminal result.
-    def record_dynamic_running!(job:, worker:, environment_keys:)
+    def record_dynamic_running!(job:, worker:, environment_keys:, placement: nil)
       unless worker.is_a?(RegistryWorker) && worker.ready?
         raise Error, "dynamic attempts require a READY registry worker"
       end
@@ -63,7 +64,8 @@ module WorkloadOrchestrator
         job: job,
         worker_name: worker.worker_id,
         environment_keys: environment_keys,
-        worker_binding: binding
+        worker_binding: binding,
+        placement: placement
       )
       DynamicAttempt.new(job: job, attempt_id: attempt_id, started_at: started_at, worker_binding: binding)
     end

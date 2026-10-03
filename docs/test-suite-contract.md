@@ -70,7 +70,7 @@ The non-macOS limits remain separate because the prior Linux execution
 environment ran the suite materially slower than the M4 Pro and is not an
 appropriate source for the macOS baseline.
 
-For deliberate cross-repository contention, `AF_TEST_CONTENDED=1` multiplies
+For deliberate cross-repository contention, `WLO_TEST_CONTENDED=1` multiplies
 both limits by 1.25. This yields:
 
 - macOS warning: 13.75 s
@@ -114,5 +114,5 @@ tightens existing floors without lowering them.
   failure appear at the end.
 
 The ordinary suite is expected to have zero skips. Scale-sensitive benchmarks
-in other AdventureFinder repositories guard their own algorithms; WLO does
-not add a synthetic benchmark as part of this general test-health contract.
+in workload-producing repositories guard their own algorithms; WLO does not
+add a synthetic benchmark as part of this general test-health contract.

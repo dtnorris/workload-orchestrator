@@ -75,7 +75,7 @@ class OperatorUxTest < Minitest::Test
     @managers << JSON.parse(File.read(File.join(@output, "manager.json")))
     assert_includes out, "continues after this CLI or terminal exits"
     assert_includes out, "Ctrl-C here is not a workload pause"
-    assert_includes out, "WLO never tears down paid provider capacity"
+    assert_includes out, "WLO never tears down provider capacity"
   end
 
   # Real fork/setsid, Runner and job process; no repeated executable startup.

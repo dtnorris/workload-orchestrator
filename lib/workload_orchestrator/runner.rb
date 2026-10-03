@@ -8,6 +8,9 @@ require_relative "dynamic_scheduler"
 
 module WorkloadOrchestrator
   class Runner
+    PLACEMENT_INTERFACE_VERSION = "wlo-attempt-placement/v0.1"
+    WORKER_ENDPOINT_ENV = "WLO_WORKER_ENDPOINT"
+
     attr_reader :plan, :workers, :workdir, :store, :worker_registry_poller,
                 :worker_loss_reconciler, :dynamic_scheduler, :interrupt_signal
 
@@ -150,7 +153,11 @@ module WorkloadOrchestrator
 
           attempt = store.record_dynamic_running!(
             job: assignment.job, worker: assignment.worker,
-            environment_keys: assignment.job.env.keys | ["AF_OLLAMA_BASE_URL"]
+            environment_keys: assignment.job.env.keys | [WORKER_ENDPOINT_ENV],
+            placement: {
+              "contract_version" => PLACEMENT_INTERFACE_VERSION,
+              "endpoint_environment_variable" => WORKER_ENDPOINT_ENV
+            }
           )
           launch_dynamic_assignment(assignment, attempt)
         end
@@ -170,7 +177,7 @@ module WorkloadOrchestrator
     def execute_dynamic_command(job, attempt)
       # Consume the identity persisted before launch, never a fresh registry view.
       environment = job.env.merge(
-        "AF_OLLAMA_BASE_URL" => attempt.worker_binding.execution_identity.fetch("endpoint")
+        WORKER_ENDPOINT_ENV => attempt.worker_binding.execution_identity.fetch("endpoint")
       )
       stdout, stderr, status = @command_executor.call(environment, *job.argv, chdir: workdir)
       record_dynamic_result(job, attempt, stdout, stderr, status)

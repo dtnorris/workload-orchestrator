@@ -100,7 +100,7 @@ class DynamicLocalDispatchTest < Minitest::Test
       assert_equal job.argv, data.fetch(:argv)
       assert_equal @workdir, data.fetch(:workdir)
       assert_equal "running", metadata.fetch("status")
-      assert_equal record.fetch("endpoint"), data.dig(:environment, "AF_OLLAMA_BASE_URL")
+      assert_equal record.fetch("endpoint"), data.dig(:environment, "WLO_WORKER_ENDPOINT")
       assert_equal record.fetch("endpoint"), metadata.dig("worker_execution_identity", "endpoint")
       assert_equal record.fetch("generation_id"), metadata.dig("worker_snapshot", "generation_id")
       assert_equal record.fetch("capabilities"), metadata.dig("worker_snapshot", "capabilities")
@@ -111,7 +111,7 @@ class DynamicLocalDispatchTest < Minitest::Test
       refute read_metadata(id).key?("provider_job_id")
       refute read_metadata(id).key?("evidence")
     end
-    assert_equal 2, observed.values.map { |data| data.dig(:environment, "AF_OLLAMA_BASE_URL") }.uniq.length
+    assert_equal 2, observed.values.map { |data| data.dig(:environment, "WLO_WORKER_ENDPOINT") }.uniq.length
     assert_equal 0, read_metadata("success").fetch("exit_status")
     assert_equal 7, read_metadata("failure").fetch("exit_status")
     assert_nil read_metadata("exception").fetch("exit_status")
@@ -140,20 +140,21 @@ class DynamicLocalDispatchTest < Minitest::Test
     refute runner.respond_to?(:remote_request, true)
   end
 
-  def test_afw_environment_is_identical_for_local_and_remote_endpoints_except_runtime_binding
-    job_environment = AFW_CONTROL_NAMES.to_h { |name| [name, nil] }
-    job_environment["AF_LLM_PROVIDER"] = "ollama"
-    job_environment["AF_SOCIAL_INTERACTION_GUARDRAIL_PROFILE"] = "phase6-v0.3"
+  def test_generic_environment_is_identical_across_sources_except_runtime_binding
+    job_environment = {
+      "APPLICATION_MODE" => "scoring", "FEATURE_PROFILE" => "stable", "REMOVED_SETTING" => nil
+    }
     document = JSON.parse(@plan.bytes)
     document["jobs"] = [fixture_job("success", pool_id: "model-a").merge(
-      "argv" => [RbConfig.ruby, "-rjson", "-e", "puts JSON.generate(ENV.to_h.select { |key, _| key.start_with?('AF_') })"],
+      "argv" => [RbConfig.ruby, "-rjson", "-e",
+                 "puts JSON.generate(ENV.to_h.slice('APPLICATION_MODE', 'FEATURE_PROFILE', 'REMOVED_SETTING', 'WLO_WORKER_ENDPOINT'))"],
       "env" => job_environment
     )]
     @plan = WorkloadOrchestrator::Plan.new(JSON.generate(document))
-    previous = AFW_CONTROL_NAMES.to_h { |name| [name, ENV[name]] }
-    previous["AF_OLLAMA_BASE_URL"] = ENV["AF_OLLAMA_BASE_URL"]
-    AFW_CONTROL_NAMES.each { |name| ENV[name] = "stale-#{name}" }
-    ENV["AF_OLLAMA_BASE_URL"] = "http://wrong.example:11434"
+    names = job_environment.keys + ["WLO_WORKER_ENDPOINT"]
+    previous = names.to_h { |name| [name, ENV[name]] }
+    names.each { |name| ENV[name] = "stale-#{name}" }
+    ENV["WLO_WORKER_ENDPOINT"] = "http://wrong.example:11434"
 
     observed = ["http://127.0.0.1:11441", "http://remote.example:11434"].map.with_index do |endpoint, index|
       @output = File.join(@tmp, "output-#{index}")
@@ -166,14 +167,14 @@ class DynamicLocalDispatchTest < Minitest::Test
     end
 
     observed.each do |environment|
-      assert_equal "ollama", environment.fetch("AF_LLM_PROVIDER")
-      assert_equal "phase6-v0.3", environment.fetch("AF_SOCIAL_INTERACTION_GUARDRAIL_PROFILE")
-      refute environment.key?("AF_INVESTIGATION_GUARDRAIL_PROFILE")
+      assert_equal "scoring", environment.fetch("APPLICATION_MODE")
+      assert_equal "stable", environment.fetch("FEATURE_PROFILE")
+      refute environment.key?("REMOVED_SETTING")
     end
-    assert_equal "http://127.0.0.1:11441", observed[0].fetch("AF_OLLAMA_BASE_URL")
-    assert_equal "http://remote.example:11434", observed[1].fetch("AF_OLLAMA_BASE_URL")
-    assert_equal observed[0].reject { |name, _value| name == "AF_OLLAMA_BASE_URL" },
-                 observed[1].reject { |name, _value| name == "AF_OLLAMA_BASE_URL" }
+    assert_equal "http://127.0.0.1:11441", observed[0].fetch("WLO_WORKER_ENDPOINT")
+    assert_equal "http://remote.example:11434", observed[1].fetch("WLO_WORKER_ENDPOINT")
+    assert_equal observed[0].reject { |name, _value| name == "WLO_WORKER_ENDPOINT" },
+                 observed[1].reject { |name, _value| name == "WLO_WORKER_ENDPOINT" }
   ensure
     previous&.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
   end
@@ -223,7 +224,7 @@ class DynamicLocalDispatchTest < Minitest::Test
     end
     calls = []
     executor = lambda do |environment, *_argv, **_options|
-      calls << environment.fetch("AF_OLLAMA_BASE_URL")
+      calls << environment.fetch("WLO_WORKER_ENDPOINT")
       started << true
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
       until runner.store.dispatch_halted?
@@ -252,7 +253,7 @@ class DynamicLocalDispatchTest < Minitest::Test
     plan_path = File.join(@tmp, "plan.json")
     data = JSON.parse(@plan.bytes)
     data["jobs"] = [fixture_job("success", pool_id: "model-a")]
-    data["jobs"][0]["argv"] = [RbConfig.ruby, "-e", "puts ENV.fetch('AF_OLLAMA_BASE_URL')"]
+    data["jobs"][0]["argv"] = [RbConfig.ruby, "-e", "puts ENV.fetch('WLO_WORKER_ENDPOINT')"]
     File.write(plan_path, JSON.generate(data))
     registry_path = File.join(@tmp, "registry.json")
     File.write(registry_path, snapshot(@records))
