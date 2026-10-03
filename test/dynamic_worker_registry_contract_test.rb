@@ -2,7 +2,9 @@
 
 require_relative "test_helper"
 require "digest"
+require "open3"
 require "time"
+require_relative "../contracts/dynamic-worker-registry/v0.1/conformance"
 
 class DynamicWorkerRegistryContractTest < Minitest::Test
   CONTRACT_ROOT = File.expand_path("../contracts/dynamic-worker-registry/v0.1", __dir__)
@@ -28,14 +30,87 @@ class DynamicWorkerRegistryContractTest < Minitest::Test
       "c0d0b86037813f05e08df80789d00152d0e086d9fd403aca9b200ab789aa8ddf"
   }.freeze
 
-  def test_fixture_bytes_match_the_authoritative_contract
-    actual_paths = [FIXTURE] + Dir[File.join(INVALID_ROOT, "*.json")]
-    expected_paths = AUTHORITATIVE_SHA256.keys.map { |path| File.join(CONTRACT_ROOT, path) }
+  EXPECTATIONS = File.join(CONTRACT_ROOT, "INVALID_EXPECTATIONS.tsv")
 
-    assert_equal expected_paths.sort, actual_paths.sort
-    AUTHORITATIVE_SHA256.each do |path, expected_hash|
-      assert_equal expected_hash, Digest::SHA256.file(File.join(CONTRACT_ROOT, path)).hexdigest
+  def test_fixture_bytes_match_the_authoritative_contract
+    manifest = File.readlines(File.join(CONTRACT_ROOT, "SHA256SUMS"), chomp: true)
+    manifest_paths = manifest.to_h do |line|
+      expected, path = line.split(/\s+/, 2)
+      [path, expected]
     end
+
+    expected_paths = Dir[File.join(CONTRACT_ROOT, "**", "*")].select { |path| File.file?(path) }
+    expected_paths = expected_paths.reject { |path| path.end_with?("SHA256SUMS") }
+    expected_paths.map! { |path| path.delete_prefix("#{CONTRACT_ROOT}/") }
+    assert_equal expected_paths.sort, manifest_paths.keys.sort
+    manifest_paths.each do |path, expected_hash|
+      assert_equal expected_hash, Digest::SHA256.file(File.join(CONTRACT_ROOT, path)).hexdigest, path
+    end
+
+    AUTHORITATIVE_SHA256.each do |path, expected_hash|
+      assert_equal expected_hash, manifest_paths.fetch(path), path
+    end
+  end
+
+  def test_standalone_conformance_accepts_valid_fixture_without_loading_wlo_runtime
+    script = File.join(CONTRACT_ROOT, "conformance.rb")
+    stdout, stderr, status = Open3.capture3(
+      RbConfig.ruby, script, FIXTURE, NOW.iso8601, chdir: CONTRACT_ROOT
+    )
+
+    assert status.success?, stderr
+    assert_equal "PASS #{FIXTURE}\n", stdout
+    assert_empty stderr
+  end
+
+  def test_standalone_conformance_rejects_each_fixture_for_the_intended_reason
+    invalid_expectations.each do |relative_path, expected_message|
+      error = assert_raises(DynamicWorkerRegistryV01::Conformance::Error, relative_path) do
+        DynamicWorkerRegistryV01::Conformance.validate_bytes!(
+          File.binread(File.join(CONTRACT_ROOT, relative_path)), now: NOW
+        )
+      end
+      assert_includes error.message, expected_message, relative_path
+    end
+  end
+
+  def test_standalone_fingerprint_algorithm_is_independently_reproducible
+    worker = fixture_document.fetch("workers").first
+    expected_payload = <<~JSON.chomp
+      {"gpu_id":"NVIDIA A40","labels":["inference","ollama","remote"],"ollama_models":[{"context_length":131072,"digest":"#{'a' * 64}","fully_gpu_resident":true,"model":"qualified-model:latest"}]}
+    JSON
+
+    assert_equal expected_payload, DynamicWorkerRegistryV01::Conformance.capability_payload(worker)
+    assert_equal Digest::SHA256.hexdigest(expected_payload),
+                 DynamicWorkerRegistryV01::Conformance.capability_fingerprint(worker)
+    assert_equal worker.fetch("capability_fingerprint"),
+                 DynamicWorkerRegistryV01::Conformance.capability_fingerprint(worker)
+  end
+
+  def test_standalone_revision_comparison_accepts_newer_snapshot_after_previous_expiry
+    previous_bytes = File.binread(FIXTURE)
+    current = fixture_document.merge(
+      "revision" => 8,
+      "published_at" => "2030-01-01T00:06:00Z",
+      "expires_at" => "2030-01-01T00:11:00Z"
+    )
+    current_bytes = JSON.generate(current)
+
+    assert_equal current, DynamicWorkerRegistryV01::Conformance.validate_bytes!(
+      current_bytes,
+      now: Time.iso8601("2030-01-01T00:07:00Z"),
+      previous_bytes: previous_bytes
+    )
+
+    reused = JSON.generate(current.merge("revision" => 7))
+    error = assert_raises(DynamicWorkerRegistryV01::Conformance::Error) do
+      DynamicWorkerRegistryV01::Conformance.validate_bytes!(
+        reused,
+        now: Time.iso8601("2030-01-01T00:07:00Z"),
+        previous_bytes: previous_bytes
+      )
+    end
+    assert_includes error.message, "revision 7 changed contents"
   end
 
   def test_canonical_fixture_identity_publication_and_capabilities
@@ -155,6 +230,10 @@ class DynamicWorkerRegistryContractTest < Minitest::Test
   end
 
   private
+
+  def invalid_expectations
+    File.readlines(EXPECTATIONS, chomp: true).to_h { |line| line.split("\t", 2) }
+  end
 
   def fixture_document
     JSON.parse(File.read(FIXTURE))

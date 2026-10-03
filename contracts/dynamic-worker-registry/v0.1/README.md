@@ -15,6 +15,19 @@ publishers may retain byte-identical conformance copies without becoming API
 owners. Changing any field meaning, required field, enum, matching rule, or
 fingerprint input requires a new contract version; v0.1 rejects unknown fields.
 
+[`conformance.rb`](conformance.rb) is the standalone executable reference
+validator for this wire contract. It uses only the Ruby standard library and
+does not load WLO application or scheduling code. `INVALID_EXPECTATIONS.tsv`
+records the intended rejection reason for every canonical invalid fixture.
+`SHA256SUMS` pins the public corpus files; a provider may copy this directory
+and verify it from its own checkout, but the copy remains non-authoritative.
+
+Validate a snapshot directly with an optional explicit evaluation time:
+
+```text
+ruby conformance.rb SNAPSHOT.json [NOW_RFC3339]
+```
+
 ## Snapshot shape
 
 JSON names and enum values are case-sensitive. Objects contain exactly the
@@ -74,7 +87,7 @@ not be silently substituted into an existing attempt.
 | Field | Requirement |
 | --- | --- |
 | `gpu_id` | Nonempty provider-neutral hardware/runtime identity string, at most 256 characters. It is compared exactly only when the workload supplies `required_gpu_id`. |
-| `ollama.models` | Sorted, nonempty array of distinct model records. Sort by the tuple `(model, digest, context_length, fully_gpu_resident)`. |
+| `ollama.models` | Sorted, nonempty array of model records with unique `model` values. Sort by the tuple `(model, digest, context_length, fully_gpu_resident)`. |
 
 Each model record contains exactly:
 
