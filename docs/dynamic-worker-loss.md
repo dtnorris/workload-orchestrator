@@ -27,10 +27,17 @@ cannot affect a same-named worker in another registry namespace.
 | Same `worker_id`, different `generation_id` | `worker_generation_replaced` in-doubt failure. |
 | Same worker and generation, different endpoint | `worker_endpoint_changed` in-doubt failure. |
 | Same worker, generation, and endpoint, different fingerprint | `worker_capability_changed` in-doubt failure. |
+| Bound source's last accepted snapshot expires | `worker_source_expired` in-doubt failure. |
 
 Endpoint equality never establishes continuity. A replacement generation at a
 reused endpoint still ends the old attempt in doubt. The replacement is a new
 worker that is eligible only for future work.
+
+A failed refresh alone does not establish worker loss while the bound source's
+last accepted snapshot is fresh. Expiry does establish that WLO can no longer
+reuse the capacity, and reconciliation applies only to attempts bound to that
+snapshot's `registry_id`. A same-named worker in another registry cannot
+satisfy continuity.
 
 The in-doubt attempt remains terminal `failed` with `failure_class` set to
 `non_operational`; the execution receives a `dynamic_worker_loss` dispatch halt

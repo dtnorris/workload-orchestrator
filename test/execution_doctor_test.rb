@@ -98,6 +98,7 @@ class ExecutionDoctorTest < Minitest::Test
     expected = {
       "NO_RUNNABLE_WORK" => %w[dependency_waiting inspect_execution_status],
       "NO_ACCEPTED_REGISTRY_SNAPSHOT" => %w[worker_discovery inspect_registry],
+      "REQUIRED_WORKER_SOURCE_UNAVAILABLE" => %w[registry_validation inspect_registry],
       "REGISTRY_INVALID_OR_STALE" => %w[registry_validation inspect_registry],
       "NO_COMPATIBLE_READY_WORKERS" => %w[worker_eligibility inspect_registry],
       "READY_WORKERS_INCOMPATIBLE" => %w[worker_eligibility inspect_registry],

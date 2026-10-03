@@ -100,26 +100,26 @@ class DynamicRunnerTest < Minitest::Test
     assert_nil runner.worker_registry_poller
   end
 
-  def test_fatal_registry_error_halts_execution_fail_closed
+  def test_required_registry_error_waits_recoverably_without_dispatch_halt
     source = SequenceSource.new(snapshot(
                                   revision: 7,
                                   expires_at: NOW.iso8601,
                                   workers: []
                                 ))
-    runner = build_runner(source, ->(*) { raise "unexpected sleep" })
+    runner = nil
+    runner = build_runner(source, ->(*) { runner.store.pause! })
 
-    error = assert_raises(WorkloadOrchestrator::Error) { runner.run }
+    assert_equal "paused", runner.run
 
-    assert_includes error.message, "expired"
-    assert_equal "infrastructure_failed", runner.store.status
-    assert_equal "worker_registry", runner.store.dispatch_halt.fetch("kind")
+    health = runner.worker_registry_poller.source_health.fetch("default")
+    assert_includes health.fetch("failure_reason"), "expired"
+    assert_equal "unavailable", health.fetch("state")
+    assert health.fetch("blocking")
+    refute runner.store.dispatch_halted?
     assert_equal({ "pending" => 1 }, compact_counts)
-
-    resume_error = assert_raises(WorkloadOrchestrator::Error) { runner.run(resume: true) }
-    assert_includes resume_error.message, "worker registry polling is halted"
   end
 
-  def test_resume_uses_checkpoint_and_rejects_registry_rollback
+  def test_resume_uses_checkpoint_and_isolates_registry_rollback
     first_source = SequenceSource.new(snapshot(revision: 8, workers: []))
     first_runner = nil
     sleeper = lambda do |_seconds, _stop|
@@ -128,14 +128,16 @@ class DynamicRunnerTest < Minitest::Test
     first_runner = build_runner(first_source, sleeper)
     assert_equal "paused", first_runner.run
 
+    resumed = nil
     resumed = build_runner(
       SequenceSource.new(snapshot(revision: 7, published_at: "2029-12-31T23:59:30Z", workers: [])),
-      ->(*) { raise "unexpected sleep" }
+      ->(*) { resumed.store.pause! }
     )
-    error = assert_raises(WorkloadOrchestrator::Error) { resumed.run(resume: true) }
+    assert_equal "paused", resumed.run(resume: true)
 
-    assert_includes error.message, "rolled back"
-    assert_equal "worker_registry", resumed.store.dispatch_halt.fetch("kind")
+    assert_includes resumed.worker_registry_poller.source_health.dig("default", "failure_reason"), "rolled back"
+    assert_equal 8, resumed.worker_registry_poller.accepted_checkpoint.fetch("revision")
+    refute resumed.store.dispatch_halted?
   end
 
   def test_terminal_dynamic_work_finishes_without_polling
@@ -179,10 +181,9 @@ class DynamicRunnerTest < Minitest::Test
     end
     runner = build_runner(source, ->(*) { raise "unexpected sleep" })
 
-    error = assert_raises(WorkloadOrchestrator::Error) { runner.run }
-
-    assert_includes error.message, "expired"
+    assert_equal "interrupted", runner.run
     assert_equal "interrupted", runner.store.status
+    assert_includes runner.worker_registry_poller.source_health.dig("default", "failure_reason"), "expired"
   end
 
   def test_registry_error_does_not_replace_an_existing_dispatch_halt
@@ -193,9 +194,7 @@ class DynamicRunnerTest < Minitest::Test
     end
     runner = build_runner(source, ->(*) { raise "unexpected sleep" })
 
-    error = assert_raises(WorkloadOrchestrator::Error) { runner.run }
-
-    assert_includes error.message, "expired"
+    assert_equal "infrastructure_failed", runner.run
     assert_equal "existing evidence", runner.store.dispatch_halt.fetch("error")
   end
 

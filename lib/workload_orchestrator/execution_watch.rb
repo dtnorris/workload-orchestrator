@@ -79,6 +79,7 @@ module WorkloadOrchestrator
                 "(#{document.fetch('progress_percent')}%)"
       print_pools(document.fetch("pool_status"))
       print_registry(document.fetch("worker_registry"))
+      print_source_health(document.fetch("worker_sources"))
       print_attempts(document.fetch("running_attempts"))
       print_workers(document.fetch("worker_registry"))
       @out.puts "Evidence: #{@root}"
@@ -220,6 +221,9 @@ module WorkloadOrchestrator
     end
 
     def worker_registry(checkpoints, attempts)
+      checkpoints = checkpoints.select do |checkpoint|
+        Time.iso8601(checkpoint.fetch("expires_at")) > current_time
+      end
       return { "available" => false, "workers" => [], "counts" => empty_worker_counts } if checkpoints.empty?
 
       busy = attempts.map do |attempt|
@@ -371,6 +375,18 @@ module WorkloadOrchestrator
                 "idle-ready=#{counts.fetch('idle_ready')}"
       registry.fetch("registries").each do |row|
         @out.puts "Registry: #{row.fetch('registry_id')} revision=#{row.fetch('revision')}"
+      end
+    end
+
+    def print_source_health(sources)
+      return if sources.empty?
+
+      sources.each do |source|
+        detail = source.fetch("failure_reason")
+        detail = " reason=#{detail}" if detail
+        @out.puts "Source: #{source.fetch('source_name')} policy=#{source.fetch('policy')} " \
+                  "state=#{source.fetch('state')} poll=#{source.fetch('last_poll_result')} " \
+                  "blocking=#{source.fetch('blocking')}#{detail}"
       end
     end
 

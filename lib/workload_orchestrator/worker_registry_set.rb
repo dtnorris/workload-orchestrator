@@ -5,7 +5,7 @@ module WorkloadOrchestrator
   # their accepted workers as one scheduler view without republishing them.
   class WorkerRegistrySet
     attr_reader :pollers, :current_workers, :ready_workers, :source_registry_ids,
-                :accepted_checkpoints
+                :accepted_checkpoints, :usable_checkpoints, :source_health
 
     def initialize(sources:, checkpoint_root:, clock: -> { Time.now.utc },
                    interval_seconds: WorkerRegistryPoller::DEFAULT_INTERVAL_SECONDS, sleeper: nil)
@@ -19,13 +19,18 @@ module WorkloadOrchestrator
       @pollers = build_pollers.freeze
       @current_workers = [].freeze
       @ready_workers = [].freeze
-      refresh_checkpoint_index!
+      refresh_views!
     rescue ArgumentError, TypeError
       raise Error, "worker registry poll interval must be a positive number"
     end
 
     def poll_once
-      pollers.each_value(&:poll_once)
+      pollers.each_value do |poller|
+        poller.poll_once
+      rescue Error
+        # The poller durably records its source-local failure. Other sources
+        # must still be polled and may continue contributing fresh capacity.
+      end
       refresh_views!
       self
     end
@@ -62,6 +67,21 @@ module WorkloadOrchestrator
       raise Error, "multiple registries are active; select one by configured source"
     end
 
+    def dispatch_blocked?
+      source_health.values.any? { |row| row.fetch("blocking") }
+    end
+
+    def blocking_sources
+      source_health.values.select { |row| row.fetch("blocking") }.freeze
+    end
+
+    def source_health_by_registry_id
+      source_health.values.filter_map do |row|
+        registry_id = row.fetch("registry_id")
+        registry_id && [registry_id, row]
+      end.to_h.freeze
+    end
+
     private
 
     def build_pollers
@@ -73,19 +93,15 @@ module WorkloadOrchestrator
                end
         poller = WorkerRegistryPoller.new(
           source: entry.source, checkpoint_path: path, clock: @clock,
-          interval_seconds: @interval_seconds
+          interval_seconds: @interval_seconds, source_name: entry.name,
+          policy: entry.policy
         )
         [entry.name, poller]
       end
     end
 
     def refresh_views!
-      registries = pollers.transform_values(&:registry)
-      unless registries.values.all?
-        raise Error, "every configured worker source must provide one accepted registry snapshot"
-      end
-
-      workers = registries.values.flat_map(&:entries).sort_by(&:execution_identity)
+      workers = pollers.values.flat_map(&:current_workers).sort_by(&:execution_identity)
       identities = workers.map(&:execution_identity)
       unless identities.uniq == identities
         raise Error, "configured worker sources published duplicate registry-qualified identities"
@@ -94,6 +110,14 @@ module WorkloadOrchestrator
       @current_workers = workers.freeze
       @ready_workers = workers.select(&:ready?).freeze
       refresh_checkpoint_index!
+      @source_health = pollers.transform_values(&:health).freeze
+      usable = @source_health.values.filter_map do |row|
+        registry_id = row.fetch("registry_id")
+        @accepted_checkpoints[registry_id] if registry_id && row.fetch("usable")
+      end
+      @usable_checkpoints = usable.to_h do |checkpoint|
+        [checkpoint.fetch("registry_id"), checkpoint]
+      end.freeze
     end
 
     def refresh_checkpoint_index!

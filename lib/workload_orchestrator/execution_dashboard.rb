@@ -17,6 +17,7 @@ module WorkloadOrchestrator
       "PAUSED" => "PAUSE",
       "CIRCUIT_BREAKER" => "BLOCK breaker",
       "DISPATCH_HALTED" => "BLOCK dispatch",
+      "REQUIRED_WORKER_SOURCE_UNAVAILABLE" => "BLOCK source",
       "NO_ACCEPTED_REGISTRY_SNAPSHOT" => "BLOCK no-registry",
       "REGISTRY_INVALID_OR_STALE" => "BLOCK registry",
       "COMPLETE" => "DONE",

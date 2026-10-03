@@ -10,10 +10,10 @@ The production CLI constructs named `CommandWorkerSource` entries from
 and passes stdout bytes unchanged to its registry parser. Source-specific
 environment and working-directory values apply only to that subprocess. WLO
 does not invoke a shell, mutate global `ENV`, or interpret provider/domain
-semantics. A nonzero exit or exec failure is a registry-source error; stderr
-and exit detail are retained in the fail-closed dispatch-halt message. The
-single-command CLI form remains compatible and uses its legacy checkpoint
-path.
+semantics. A nonzero exit or exec failure is retained as a source-local health
+failure. It does not overwrite the accepted checkpoint or abort polling of
+other sources. The single-command CLI form remains compatible, remains
+required, and uses its legacy checkpoint path.
 
 ## Waiting for capacity
 
@@ -37,13 +37,15 @@ claimed.
 one poller and checkpoint per named source. Each cycle
 performs these actions in order:
 
-1. validate and durably accept each next registry snapshot;
+1. poll every source independently, durably accepting each valid next snapshot
+   and recording source-local failures without replacing prior accepted state;
 2. reject duplicate publisher `registry_id` values and form a union without
    changing any publisher identity;
 3. reconcile each running dynamic attempt against the accepted checkpoint for
    its exact `registry_id`;
-4. if dispatch remains allowed, run the DW-11 scheduler against the immutable
-   current and READY worker views;
+4. if every required source has fresh accepted evidence and dispatch otherwise
+   remains allowed, run the DW-11 scheduler against the immutable current and
+   READY worker views;
 5. durably bind and launch the selected assignments;
 6. inspect the authoritative job and execution state; and
 7. when work remains, wait for attempt activity or the configured poll interval
@@ -109,12 +111,13 @@ and store, clears the pause through the established resume path, validates the n
 snapshot against the durable checkpoint, and restarts the same poll/schedule
 cycle. It does not reset attempt history.
 
-Registry contract, freshness, identity, revision, and immutable-revision
-violations, duplicate registry namespaces, malformed command output, and
-source-command failures remain fatal
-and create the existing fail-closed `worker_registry` dispatch halt. They are
-never treated as ordinary absence of capacity and never fall back to static
-workers or legacy RPOF workload dispatch.
+Registry contract, freshness, identity, revision, immutable-revision,
+malformed-output and source-command failures are isolated to that source. A
+still-fresh accepted snapshot remains usable; once it expires its capacity is
+removed. An unusable required source creates a recoverable dispatch block,
+while an unusable optional source is visible but nonblocking. Duplicate
+registry namespaces remain a fatal set-level configuration error. WLO never
+falls back to static workers or legacy RPOF workload dispatch.
 
 DW-14 in-doubt worker-loss evidence also remains a dispatch halt. Reconciliation
 runs before scheduling, and a resulting halt prevents a replacement worker

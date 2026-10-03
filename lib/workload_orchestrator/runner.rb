@@ -112,7 +112,7 @@ module WorkloadOrchestrator
       worker_registry_poller.run(stop: method(:stop_dynamic_polling?)) do |poller|
         worker_loss_reconciler.reconcile!(poller)
         @live_display.accept_workers(poller.current_workers)
-        if dynamic_scheduler
+        if dynamic_scheduler && !poller.dispatch_blocked?
           schedule_dynamic_assignments(
             poller.ready_workers, current_workers: poller.current_workers
           )

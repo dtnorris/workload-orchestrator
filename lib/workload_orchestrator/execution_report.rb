@@ -19,6 +19,9 @@ module WorkloadOrchestrator
       terminal = counts.fetch("complete") + counts.fetch("failed") + counts.fetch("interrupted", 0)
       report = report_document(state, jobs, counts, terminal)
       apply_owner_crash!(report)
+      report["worker_sources"] = WorkerSourceHealth.load_root(
+        File.join(@root, "dynamic-workers"), clock: @clock
+      )
       report["pool_status"] = ExecutionPoolStatus.new(
         plan: @plan, output: @root, clock: @clock
       ).document(report)
@@ -43,6 +46,7 @@ module WorkloadOrchestrator
       out.puts "Jobs: #{state.fetch('counts').map { |key, value| "#{key}=#{value}" }.join(' ')}"
       out.puts "Resources: #{state.dig('resource_disposition', 'phase')}" if state["resource_disposition"]
       print_controls(out, state)
+      print_worker_sources(out, state.fetch("worker_sources"))
       print_pools(out, state.fetch("pool_status"))
       print_timing(out, state)
       print_jobs(out, state.fetch("jobs"), state["executor_active"])
@@ -92,6 +96,20 @@ module WorkloadOrchestrator
       out.puts "Pause: requested (draining active jobs)" if state["paused"] && state["executor_active"]
       out.puts "Pause: requested" if state["paused"] && !state["executor_active"]
       out.puts "Breaker: #{state.dig('circuit_breaker', 'reason')}" if state.dig("circuit_breaker", "tripped")
+    end
+
+    def print_worker_sources(out, sources)
+      return if sources.empty?
+
+      out.puts "Worker sources:"
+      sources.each do |source|
+        result = source.fetch("last_poll_result")
+        detail = source.fetch("failure_reason")
+        detail = " detail=#{detail}" if detail
+        out.puts "  #{source.fetch('source_name')} policy=#{source.fetch('policy')} " \
+                 "state=#{source.fetch('state')} poll=#{result} " \
+                 "blocking=#{source.fetch('blocking')}#{detail}"
+      end
     end
 
     def print_pools(out, pools)

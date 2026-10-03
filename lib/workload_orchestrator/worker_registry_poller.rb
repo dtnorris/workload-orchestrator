@@ -19,15 +19,26 @@ module WorkloadOrchestrator
     ].freeze
     WORKER_OPTIONAL_KEYS = %w[worker_snapshot].freeze
 
-    attr_reader :current_workers, :ready_workers, :last_reconciliation,
-                :reconciliation_history, :registry
+    attr_reader :last_reconciliation, :reconciliation_history, :registry,
+                :source_name, :policy, :last_poll_result, :last_attempted_at,
+                :failure_reason
 
     def initialize(source:, checkpoint_path:, clock: -> { Time.now.utc },
-                   interval_seconds: DEFAULT_INTERVAL_SECONDS, sleeper: nil)
+                   interval_seconds: DEFAULT_INTERVAL_SECONDS, sleeper: nil,
+                   source_name: "default", policy: "required", health_path: nil)
       raise Error, "worker source must implement #latest_snapshot" unless source.respond_to?(:latest_snapshot)
+      unless source_name.is_a?(String) && source_name.match?(WorkerSourceSet::NAME)
+        raise Error, "worker source name is invalid: #{source_name.inspect}"
+      end
+      unless WorkerSourceSet::POLICIES.include?(policy)
+        raise Error, "worker source #{source_name.inspect} policy must be required or optional"
+      end
 
       @source = source
+      @source_name = source_name.dup.freeze
+      @policy = policy.dup.freeze
       @checkpoint_path = File.expand_path(checkpoint_path)
+      @health_path = File.expand_path(health_path || File.join(File.dirname(@checkpoint_path), "health.json"))
       @clock = clock
       @interval_seconds = Float(interval_seconds)
       raise Error, "worker registry poll interval must be positive" unless @interval_seconds.positive?
@@ -35,15 +46,18 @@ module WorkloadOrchestrator
       @sleeper = sleeper || method(:interruptible_sleep)
       @checkpoint = load_checkpoint
       @registry = nil
-      @current_workers = [].freeze
-      @ready_workers = [].freeze
-      @last_reconciliation = empty_reconciliation
+      @accepted_workers = workers_from_checkpoint
+      @last_reconciliation = @checkpoint ? @checkpoint.fetch("last_reconciliation") : empty_reconciliation
       @reconciliation_history = @checkpoint ? @checkpoint.fetch("reconciliation_history") : [].freeze
+      @last_poll_result = "never"
+      @last_attempted_at = nil
+      @failure_reason = nil
     rescue ArgumentError, TypeError
       raise Error, "worker registry poll interval must be a positive number"
     end
 
     def poll_once
+      attempted_at = current_time
       snapshot = @source.latest_snapshot
       now = current_time
       candidate = DynamicWorkerRegistry.new(snapshot, now: now, previous: registry)
@@ -53,13 +67,17 @@ module WorkloadOrchestrator
       write_checkpoint(checkpoint)
 
       @registry = candidate
-      @current_workers = candidate.entries
-      @ready_workers = candidate.schedulable_workers
+      @accepted_workers = candidate.entries
       @last_reconciliation = deep_freeze(reconciliation)
       @reconciliation_history = @checkpoint.fetch("reconciliation_history")
+      record_health!(attempted_at:, result: "success", failure_reason: nil)
       self
     rescue NotImplementedError => e
+      record_health!(attempted_at:, result: "failure", failure_reason: e.message)
       raise Error, e.message
+    rescue Error => e
+      record_health!(attempted_at:, result: "failure", failure_reason: e.message)
+      raise
     end
 
     def run(stop:)
@@ -79,6 +97,38 @@ module WorkloadOrchestrator
     # may safely use it as the sole source of worker-loss decisions.
     def accepted_checkpoint
       @checkpoint
+    end
+
+    def current_workers
+      fresh? ? @accepted_workers : [].freeze
+    end
+
+    def ready_workers
+      current_workers.select(&:ready?).freeze
+    end
+
+    def fresh?
+      @checkpoint && Time.iso8601(@checkpoint.fetch("expires_at")) > current_time
+    end
+
+    def usable?
+      !!fresh?
+    end
+
+    def required?
+      policy == "required"
+    end
+
+    def health
+      WorkerSourceHealth.view(
+        source_name:, policy:, checkpoint: @checkpoint,
+        poll: {
+          last_attempted_at: @last_attempted_at&.iso8601,
+          last_poll_result:,
+          failure_reason:
+        },
+        now: current_time
+      )
     end
 
     private
@@ -193,6 +243,34 @@ module WorkloadOrchestrator
       }
     end
 
+    def workers_from_checkpoint
+      return [].freeze unless @checkpoint
+      return [].freeze unless @checkpoint.fetch("workers").all? { |worker| worker["worker_snapshot"] }
+
+      registry = {
+        registry_id: @checkpoint.fetch("registry_id"),
+        revision: @checkpoint.fetch("revision"),
+        published_at: Time.iso8601(@checkpoint.fetch("published_at")),
+        expires_at: Time.iso8601(@checkpoint.fetch("expires_at")),
+        sha256: @checkpoint.fetch("snapshot_sha256")
+      }.freeze
+      @checkpoint.fetch("workers").map do |worker|
+        snapshot = worker.fetch("worker_snapshot")
+        RegistryWorker.new(
+          registry:,
+          record: {
+            "worker_id" => worker.fetch("worker_id"),
+            "generation_id" => worker.fetch("generation_id"),
+            "endpoint" => worker.fetch("endpoint"),
+            "state" => worker.fetch("state"),
+            "labels" => snapshot.fetch("labels"),
+            "capabilities" => snapshot.fetch("capabilities"),
+            "capability_fingerprint" => worker.fetch("capability_fingerprint")
+          }.freeze
+        )
+      end.freeze
+    end
+
     def load_checkpoint
       return unless File.file?(@checkpoint_path)
 
@@ -297,6 +375,18 @@ module WorkloadOrchestrator
       @checkpoint = deep_freeze(JSON.parse(JSON.generate(value)))
     ensure
       File.delete(temporary) if defined?(temporary) && temporary && File.exist?(temporary)
+    end
+
+    def record_health!(attempted_at:, result:, failure_reason:)
+      return unless attempted_at
+
+      WorkerSourceHealth.write(
+        path: @health_path, source_name:, policy:, attempted_at:,
+        result:, failure_reason:
+      )
+      @last_attempted_at = attempted_at
+      @last_poll_result = result
+      @failure_reason = failure_reason&.dup&.freeze
     end
 
     def empty_reconciliation

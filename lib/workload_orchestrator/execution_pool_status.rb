@@ -18,6 +18,7 @@ module WorkloadOrchestrator
       PAUSED
       CIRCUIT_BREAKER
       DISPATCH_HALTED
+      REQUIRED_WORKER_SOURCE_UNAVAILABLE
       NO_ACCEPTED_REGISTRY_SNAPSHOT
       REGISTRY_INVALID_OR_STALE
       COMPLETE
@@ -32,6 +33,7 @@ module WorkloadOrchestrator
       ALL_COMPATIBLE_WORKERS_BUSY
       WORKERS_NOT_READY
       READY_WORKERS_INCOMPATIBLE
+      REQUIRED_WORKER_SOURCE_UNAVAILABLE
       NO_ACCEPTED_REGISTRY_SNAPSHOT
       REGISTRY_INVALID_OR_STALE
     ].freeze
@@ -47,14 +49,21 @@ module WorkloadOrchestrator
       return [] unless @plan.priority_scheduling?
 
       checkpoints, registry_error = load_checkpoints
-      registry_error ||= "an accepted registry checkpoint is expired" if checkpoints_expired?(checkpoints)
+      source_health = report.fetch("worker_sources", [])
+      required_source = source_health.find { |row| row.fetch("blocking") }
+      if source_health.empty? && checkpoints_expired?(checkpoints)
+        registry_error ||= "an accepted registry checkpoint is expired"
+      end
+      checkpoints = checkpoints.reject do |checkpoint|
+        Time.iso8601(checkpoint.fetch("expires_at")) <= current_time
+      end
       registry_workers = build_registry_workers(checkpoints)
       ready_workers = registry_workers.select(&:ready?)
       busy_identities = running_identities(report.fetch("jobs"))
 
       shared = {
         checkpoint: checkpoints.length == 1 ? checkpoints.first : nil,
-        checkpoints:, registry_error:, registry_workers:, ready_workers:, busy_identities:
+        checkpoints:, registry_error:, required_source:, registry_workers:, ready_workers:, busy_identities:
       }
       @plan.pools.map { |pool| pool_document(pool, report, shared) }
     end
@@ -78,6 +87,11 @@ module WorkloadOrchestrator
       }
       registry_error = shared.fetch(:registry_error)
       row["detail"] = registry_error if reason == "REGISTRY_INVALID_OR_STALE" && registry_error
+      if reason == "REQUIRED_WORKER_SOURCE_UNAVAILABLE"
+        source = shared.fetch(:required_source)
+        row["detail"] = "required worker source #{source.fetch('source_name').inspect} is " \
+                        "#{source.fetch('state')}: #{source.fetch('failure_reason')}"
+      end
       row
     end
 
@@ -112,7 +126,8 @@ module WorkloadOrchestrator
     def capacity_evidence(evidence, shared)
       {
         runnable: evidence.fetch(:runnable), checkpoint: shared.fetch(:checkpoints).empty? ? nil : true,
-        registry_error: shared.fetch(:registry_error), compatible: evidence.fetch(:compatible),
+        registry_error: shared.fetch(:registry_error), required_source: shared.fetch(:required_source),
+        compatible: evidence.fetch(:compatible),
         busy: evidence.fetch(:busy), idle: evidence.fetch(:idle),
         ready_workers: evidence.fetch(:ready_workers),
         not_ready_compatible: evidence.fetch(:not_ready_compatible)
@@ -131,7 +146,12 @@ module WorkloadOrchestrator
     end
 
     def reason_for(report, counts, capacity)
-      control_reason(report, counts) || capacity_reason(capacity)
+      control = control_reason(report, counts)
+      return control if control && control != "RUNNING"
+      return "REQUIRED_WORKER_SOURCE_UNAVAILABLE" if
+        capacity.fetch(:required_source) && counts.fetch("pending").positive?
+
+      control || capacity_reason(capacity)
     end
 
     def control_reason(report, counts)
@@ -171,7 +191,8 @@ module WorkloadOrchestrator
       case reason
       when "RUNNING" then "ACTIVE"
       when "READY_TO_DISPATCH" then "RUNNABLE"
-      when "PAUSED", "CIRCUIT_BREAKER", "DISPATCH_HALTED", "REGISTRY_INVALID_OR_STALE" then "BLOCKED"
+      when "PAUSED", "CIRCUIT_BREAKER", "DISPATCH_HALTED", "REGISTRY_INVALID_OR_STALE",
+           "REQUIRED_WORKER_SOURCE_UNAVAILABLE" then "BLOCKED"
       when "COMPLETE", "FAILED", "INTERRUPTED", "NO_PENDING_WORK" then "TERMINAL"
       else "WAITING"
       end

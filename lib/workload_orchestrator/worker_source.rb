@@ -96,12 +96,21 @@ module WorkloadOrchestrator
   # registry_id remains its scheduling namespace.
   class WorkerSourceSet
     NAME = /\A[a-z0-9][a-z0-9_-]{0,63}\z/
-    Entry = Struct.new(:name, :source, keyword_init: true)
+    POLICIES = %w[required optional].freeze
+    Entry = Struct.new(:name, :source, :policy, keyword_init: true) do
+      def required?
+        policy == "required"
+      end
+
+      def optional?
+        policy == "optional"
+      end
+    end
 
     attr_reader :entries
 
     def self.single(source, name: "default", legacy_checkpoint: true)
-      new([Entry.new(name:, source:)], legacy_checkpoint:)
+      new([Entry.new(name:, source:, policy: "required")], legacy_checkpoint:)
     end
 
     def self.coerce(value)
@@ -115,12 +124,16 @@ module WorkloadOrchestrator
       @entries = Array(entries).map do |entry|
         name = entry.name
         source = entry.source
+        policy = entry.policy || "required"
         raise Error, "worker source name is invalid: #{name.inspect}" unless name.is_a?(String) && name.match?(NAME)
         unless source.respond_to?(:latest_snapshot)
           raise Error, "worker source #{name.inspect} must implement #latest_snapshot"
         end
+        unless POLICIES.include?(policy)
+          raise Error, "worker source #{name.inspect} policy must be required or optional"
+        end
 
-        Entry.new(name: name.dup.freeze, source:).freeze
+        Entry.new(name: name.dup.freeze, source:, policy: policy.dup.freeze).freeze
       end.freeze
       names = @entries.map(&:name)
       raise Error, "worker source set must not be empty" if names.empty?
@@ -154,9 +167,12 @@ module WorkloadOrchestrator
 
   # Strict WLO-owned production configuration for argv-safe registry sources.
   class WorkerSourceConfiguration
-    CONTRACT_VERSION = "wlo-worker-sources/v0.1"
+    CONTRACT_VERSION = "wlo-worker-sources/v0.2"
+    LEGACY_CONTRACT_VERSION = "wlo-worker-sources/v0.1"
+    CONTRACT_VERSIONS = [LEGACY_CONTRACT_VERSION, CONTRACT_VERSION].freeze
     ROOT_KEYS = %w[contract_version sources].freeze
-    SOURCE_KEYS = %w[name command args environment workdir].freeze
+    LEGACY_SOURCE_KEYS = %w[name command args environment workdir].freeze
+    SOURCE_KEYS = (LEGACY_SOURCE_KEYS + %w[policy]).freeze
 
     def self.load(path)
       expanded = File.expand_path(path)
@@ -170,15 +186,16 @@ module WorkloadOrchestrator
 
     def initialize(document, path: nil)
       exact_keys!(document, ROOT_KEYS, "worker source configuration")
-      unless document.fetch("contract_version") == CONTRACT_VERSION
-        raise Error, "worker source configuration contract must be #{CONTRACT_VERSION}"
+      version = document.fetch("contract_version")
+      unless CONTRACT_VERSIONS.include?(version)
+        raise Error, "worker source configuration contract must be #{CONTRACT_VERSIONS.join(' or ')}"
       end
 
       rows = document.fetch("sources")
       raise Error, "worker source configuration sources must be a non-empty array" unless
         rows.is_a?(Array) && !rows.empty?
 
-      entries = rows.map.with_index { |row, index| build_entry(row, index, path) }
+      entries = rows.map.with_index { |row, index| build_entry(row, index, path, version) }
       @source_set = WorkerSourceSet.new(entries)
       freeze
     rescue KeyError, TypeError => e
@@ -187,9 +204,10 @@ module WorkloadOrchestrator
 
     private
 
-    def build_entry(row, index, path)
+    def build_entry(row, index, path, version)
       label = "worker source configuration sources[#{index}]"
-      exact_keys!(row, SOURCE_KEYS, label)
+      keys = version == LEGACY_CONTRACT_VERSION ? LEGACY_SOURCE_KEYS : SOURCE_KEYS
+      exact_keys!(row, keys, label)
       name = row.fetch("name")
       command = non_empty_string!(row.fetch("command"), "#{label}.command")
       args = row.fetch("args")
@@ -199,8 +217,12 @@ module WorkloadOrchestrator
 
       environment = row.fetch("environment")
       workdir = resolve_workdir(row.fetch("workdir"), path)
+      policy = version == LEGACY_CONTRACT_VERSION ? "required" : row.fetch("policy")
+      raise Error, "#{label}.policy must be required or optional" unless
+        WorkerSourceSet::POLICIES.include?(policy)
+
       source = CommandWorkerSource.new(command, args, environment:, workdir:)
-      WorkerSourceSet::Entry.new(name:, source:)
+      WorkerSourceSet::Entry.new(name:, source:, policy:)
     end
 
     def resolve_workdir(value, path)

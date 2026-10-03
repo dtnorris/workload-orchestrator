@@ -15,6 +15,8 @@ module WorkloadOrchestrator
       checkpoints = accepted_checkpoints(poller)
       return [].freeze if checkpoints.empty?
 
+      health_by_registry = source_health_by_registry(poller)
+
       store.dynamic_running_attempts.filter_map do |attempt|
         registry_id = attempt.worker_binding.execution_identity.fetch("registry_id")
         checkpoint = checkpoints[registry_id]
@@ -24,6 +26,9 @@ module WorkloadOrchestrator
 
         workers = checkpoint.fetch("workers")
         workers_by_id = workers.to_h { |worker| [worker.fetch("worker_id"), worker] }
+        health = health_by_registry[registry_id]
+        next reconcile_expired_attempt(attempt, checkpoint, health) if health && !health.fetch("usable")
+
         reconcile_attempt(attempt, checkpoint, workers, workers_by_id)
       end.freeze
     end
@@ -39,6 +44,36 @@ module WorkloadOrchestrator
 
       checkpoint = poller.accepted_checkpoint
       checkpoint ? { checkpoint.fetch("registry_id") => checkpoint }.freeze : {}.freeze
+    end
+
+    def source_health_by_registry(poller)
+      return poller.source_health_by_registry_id if poller.respond_to?(:source_health_by_registry_id)
+
+      checkpoint = poller.accepted_checkpoint
+      return {}.freeze unless checkpoint && poller.respond_to?(:health)
+
+      { checkpoint.fetch("registry_id") => poller.health }.freeze
+    end
+
+    def reconcile_expired_attempt(attempt, checkpoint, health)
+      event = {
+        "source" => "source_health",
+        "event" => "accepted_snapshot_expired",
+        "revision" => checkpoint.fetch("revision"),
+        "snapshot_sha256" => checkpoint.fetch("snapshot_sha256"),
+        "expires_at" => checkpoint.fetch("expires_at"),
+        "observed_at" => health.fetch("last_attempted_at") || checkpoint.fetch("expires_at")
+      }.freeze
+      evidence = loss_evidence(
+        attempt, checkpoint, "worker_source_expired", nil, event
+      )
+      result = store.record_dynamic_worker_loss!(attempt:, evidence:)
+      {
+        "job_id" => attempt.job.id,
+        "attempt_id" => attempt.attempt_id,
+        "reason" => "worker_source_expired",
+        "result" => result.to_s
+      }.freeze
     end
 
     def reconcile_attempt(attempt, checkpoint, workers, workers_by_id)

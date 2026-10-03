@@ -155,19 +155,19 @@ class WorkerSourceTest < Minitest::Test
   end
 
   def test_checked_in_worker_source_examples_load
-    expected_source_counts = {
-      "local-only.yml" => 1,
-      "remote-only.yml" => 1,
-      "mixed.yml" => 2
+    expected_policies = {
+      "local-only.yml" => ["required"],
+      "remote-only.yml" => ["required"],
+      "mixed.yml" => %w[required optional]
     }
 
     File.stub(:directory?, true) do
-      expected_source_counts.each do |filename, expected_count|
+      expected_policies.each do |filename, policies|
         source_set = WorkloadOrchestrator::WorkerSourceConfiguration.load(
           File.join(EXAMPLE_SOURCE_ROOT, filename)
         )
 
-        assert_equal expected_count, source_set.entries.length, filename
+        assert_equal policies, source_set.entries.map(&:policy), filename
       end
     end
   end

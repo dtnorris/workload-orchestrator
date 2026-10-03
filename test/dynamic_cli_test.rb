@@ -60,7 +60,7 @@ class DynamicCliTest < Minitest::Test
     assert_equal ENDPOINT, metadata.dig("worker_execution_identity", "endpoint")
   end
 
-  def test_source_failure_and_malformed_registry_halt_without_legacy_fallback
+  def test_source_failure_and_malformed_registry_wait_without_legacy_fallback
     {
       "fail" => ["exit 23", "registry deliberately unavailable"],
       "malformed" => ["invalid dynamic worker registry JSON", nil]
@@ -69,14 +69,33 @@ class DynamicCliTest < Minitest::Test
       write_source_mode(mode)
       legacy_before = loaded_legacy_features
 
-      code, _out, error = run_cli(*dynamic_args("run", output: output))
+      code, out, error = run_cli(*dynamic_args("start", output: output))
+      assert_equal 0, code, error
+      pid = Integer(out.match(/PID (\d+)/)[1])
+      @manager_pids << pid
+      health_path = File.join(output, "dynamic-workers", "health.json")
+      wait_until do
+        File.file?(health_path) && JSON.parse(File.read(health_path)).fetch("last_poll_result") == "failure"
+      end
+      status_code, status_out, status_error = run_cli("status", @plan, "--output", output, "--json")
+      document = JSON.parse(status_out)
+      health = document.fetch("worker_sources").fetch(0)
 
-      assert_equal 1, code
-      assert_includes error, expected
-      assert_includes error, extra if extra
-      state = JSON.parse(File.read(File.join(output, "execution.json")))
-      assert_equal "worker_registry", state.dig("dispatch_halt", "kind")
+      assert_equal 0, status_code, status_error
+      assert_equal "required", health.fetch("policy")
+      assert_equal "unavailable", health.fetch("state")
+      assert health.fetch("blocking")
+      assert_includes health.fetch("failure_reason"), expected
+      assert_includes health.fetch("failure_reason"), extra if extra
+      assert_equal "REQUIRED_WORKER_SOURCE_UNAVAILABLE",
+                   document.dig("pool_status", 0, "reason")
+      refute JSON.parse(File.read(File.join(output, "execution.json"))).key?("dispatch_halt")
       assert_equal legacy_before, loaded_legacy_features
+
+      assert_equal 0, run_cli("pause", "--output", output).first
+      wait_until { manager_status(output) == "paused" }
+      wait_until { !process_alive?(pid) }
+      @manager_pids.delete(pid)
     end
   end
 
@@ -257,8 +276,8 @@ class DynamicCliTest < Minitest::Test
     $LOADED_FEATURES.select { |path| names.any? { |name| path.end_with?("/#{name}.rb") } }
   end
 
-  def manager_status
-    path = File.join(@output, "manager.json")
+  def manager_status(output = @output)
+    path = File.join(output, "manager.json")
     return unless File.file?(path)
 
     pointer = JSON.parse(File.read(path))

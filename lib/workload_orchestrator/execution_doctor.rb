@@ -24,6 +24,7 @@ module WorkloadOrchestrator
     WAITING = {
       "NO_RUNNABLE_WORK" => ["dependency_waiting", "Pending dependencies are not terminal.", "inspect_execution_status"],
       "NO_ACCEPTED_REGISTRY_SNAPSHOT" => ["worker_discovery", "No accepted registry snapshot is retained.", "inspect_registry"],
+      "REQUIRED_WORKER_SOURCE_UNAVAILABLE" => ["registry_validation", nil, "inspect_registry"],
       "REGISTRY_INVALID_OR_STALE" => ["registry_validation", nil, "inspect_registry"],
       "NO_COMPATIBLE_READY_WORKERS" => ["worker_eligibility", "No READY worker matches this pool.", "inspect_registry"],
       "READY_WORKERS_INCOMPATIBLE" => ["worker_eligibility", "READY workers exist, but none matches this pool.", "inspect_registry"],
@@ -185,7 +186,11 @@ module WorkloadOrchestrator
 
       reason = pool.fetch("reason")
       stage, summary, action_id = WAITING.fetch(reason, ["unknown", nil, "inspect_execution_status"])
-      summary ||= "Registry evidence is invalid or stale: #{pool['detail'] || 'no accepted detail'}"
+      summary ||= if reason == "REQUIRED_WORKER_SOURCE_UNAVAILABLE"
+                    pool["detail"] || "A required worker source is unavailable."
+                  else
+                    "Registry evidence is invalid or stale: #{pool['detail'] || 'no accepted detail'}"
+                  end
       evidence = {
         "pool_id" => pool.fetch("pool_id"), "reason" => reason,
         "registry_revision" => pool["registry_revision"], "workers" => pool.fetch("workers"),

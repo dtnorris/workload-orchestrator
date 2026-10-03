@@ -244,6 +244,7 @@ class MultiSourceWorkerTest < Minitest::Test
   def source_row(name, args: ["-e", "print '{}'"])
     {
       "name" => name,
+      "policy" => "required",
       "command" => RbConfig.ruby,
       "args" => args,
       "environment" => {},

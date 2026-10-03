@@ -13,9 +13,10 @@ Production v0.3 executions pass a YAML configuration with
 shape is:
 
 ```yaml
-contract_version: wlo-worker-sources/v0.1
+contract_version: wlo-worker-sources/v0.2
 sources:
   - name: local
+    policy: required
     command: /absolute/path/to/executable
     args:
       - workers
@@ -25,13 +26,21 @@ sources:
     workdir: /absolute/path/to/publisher
 ```
 
-`sources` must be nonempty. Each row contains exactly the five fields shown.
+`sources` must be nonempty. Each v0.2 row contains exactly the six fields shown.
 Names must be unique and contain only lowercase letters, digits, underscores
-or hyphens. `command` is an executable, `args` is an argv array,
+or hyphens. `policy` must be `required` or `optional`. `command` is an
+executable, `args` is an argv array,
 `environment` is a string-to-string map (which may be empty), and `workdir`
 must resolve to an existing directory. A relative `workdir` is resolved from
 the configuration file's directory. Unknown keys fail closed. WLO invokes
 every entry directly without a shell and without changing global `ENV`.
+
+The previous `wlo-worker-sources/v0.1` contract remains accepted without
+an ambiguous default: every v0.1 source is `required`, preserving its original
+all-sources-required safety posture. New configurations should use v0.2 and
+state policy explicitly. A required source blocks new dispatch only when it
+has no fresh accepted snapshot. An optional source never blocks dispatch
+merely because it is unavailable.
 
 The source `name` identifies configuration and checkpoint storage only. It
 does not replace, prefix or rewrite the publisher's `registry_id`. Publishers
@@ -60,6 +69,22 @@ distinct workers. Attempt evidence retains the selected publisher's exact
 registry ID, revision and snapshot hash. Reconciliation checks only that
 publisher's later checkpoints, so disappearance, replacement, endpoint change
 or capability change in one namespace cannot spill into another.
+
+Every poll attempt also updates a source-local `health.json` beside the
+checkpoint. This health evidence records policy, the last poll result and
+failure reason. It is intentionally separate from `checkpoint.json`: a failed
+command, malformed replacement, rollback or immutable-revision violation never
+rewrites the last accepted checkpoint. `status --json` exposes each configured
+source under `worker_sources`; human status prints the same policy, freshness,
+poll result and blocking state.
+
+After a failed refresh, a source's last accepted snapshot remains usable only
+until its own `expires_at`. WLO never extends that deadline. Expiry removes
+only that registry's workers from scheduling. Expiry of a required source
+blocks new dispatch until the same source accepts a valid continuation;
+expiry of an optional source is nonblocking. Recovery resumes from the
+source's retained identity and revision chain and automatically restores its
+capacity.
 
 The legacy `--worker-source-command` plus repeated `--worker-source-arg` form
 still configures exactly one source and retains

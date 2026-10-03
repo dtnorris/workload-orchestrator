@@ -126,12 +126,13 @@ class ExecutionPoolStatusTest < Minitest::Test
     assert_equal "REGISTRY_INVALID_OR_STALE", row.fetch("reason")
   end
 
-  def test_expired_checkpoint_fails_closed_without_a_halt_record
+  def test_expired_required_source_blocks_without_a_halt_record
     plan, = prepare_execution
     accept_snapshot([worker("worker-a", "model-a")], expires_at: "2030-01-01T00:00:30Z")
 
     row = status(plan)
-    assert_equal "REGISTRY_INVALID_OR_STALE", row.fetch("reason")
+    assert_equal "REQUIRED_WORKER_SOURCE_UNAVAILABLE", row.fetch("reason")
+    assert_includes row.fetch("detail"), "required worker source \"default\""
     assert_includes row.fetch("detail"), "expired"
   end
 

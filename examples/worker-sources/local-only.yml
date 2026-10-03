@@ -1,6 +1,7 @@
-contract_version: wlo-worker-sources/v0.1
+contract_version: wlo-worker-sources/v0.2
 sources:
   - name: local
+    policy: required
     command: /absolute/path/to/local-ollama-workers/bin/low
     args:
       - workers

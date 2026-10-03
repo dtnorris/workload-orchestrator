@@ -5,6 +5,14 @@ the retained execution report, FO-04 pool status, job metadata, registry
 checkpoint, controls, breaker, manager, and FO-06 interruption evidence. Add
 `--json` for the complete structured result.
 
+Dynamic execution reports include a `worker_sources` array. Each row names the
+source, its required/optional policy, last accepted registry identity and
+revision, publication and expiry timestamps, current fresh/stale/unavailable
+state, last poll result, blocking status, and a concise failure reason. Human
+`status --verbose` prints the same source health. An unavailable required
+source is diagnosed as `REQUIRED_WORKER_SOURCE_UNAVAILABLE`; an unavailable
+optional source remains visible without blocking healthy capacity.
+
 `bin/wlo logs PLAN.json JOB --output DIR --lines 15` shows bounded retained
 stderr/stdout tails plus metadata. The default is 15 lines and the maximum is
 200. Known RunPod, OpenAI, Anthropic, Google, AWS, and bearer-token forms are
