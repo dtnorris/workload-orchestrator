@@ -14,6 +14,11 @@ class Bd05DomainIndependenceTest < Minitest::Test
     "local-ollama-workers", "runpod-ollama-fleet"
   ].freeze
 
+  def test_loaded_features_contain_no_sibling_implementation
+    forbidden = $LOADED_FEATURES.grep(/(?:adventure[_-]finder|af[_-]workloads|local[_-]ollama[_-]workers|runpod[_-]ollama[_-]fleet)/i)
+    assert_empty forbidden
+  end
+
   def test_active_runtime_and_public_contracts_are_domain_neutral
     root = File.expand_path("..", __dir__)
 

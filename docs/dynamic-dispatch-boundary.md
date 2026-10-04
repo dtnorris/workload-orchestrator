@@ -5,6 +5,13 @@ WLO consumes provider-neutral `WorkerSource` snapshots, persists the selected
 `WLO_WORKER_ENDPOINT`. Scheduling, polling, worker-loss evidence, retries, live
 progress and watch behavior are unchanged.
 
+The current placement interface is `wlo-attempt-placement/v0.1`. WLO persists
+its `contract_version` and `endpoint_environment_variable` with each dynamic
+attempt. The latter is `WLO_WORKER_ENDPOINT`, set to that attempt's bound worker
+endpoint after applying the job environment overlay. A domain-owned command
+adapter may translate it into its own configuration. WLO does not interpret
+that adapter's domain or results.
+
 The WLO-owned paid-capacity runner, clients, fulfillment, readiness and admission
 implementations are removed. Historical provider-specific profiles are rejected by execution
 and worker-check, while profile/plan validation and reporting remain available.

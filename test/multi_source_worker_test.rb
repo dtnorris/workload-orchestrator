@@ -157,6 +157,11 @@ class MultiSourceWorkerTest < Minitest::Test
   end
 
   def test_duplicate_publisher_registry_identity_fails_without_a_synthetic_union
+    # Publisher identities cannot be overridden or merged through configuration.
+    configured = %w[one two].map { |name| source_row(name).merge("registry_id" => "duplicate") }
+    error = assert_raises(WorkloadOrchestrator::Error) { load_config(configured) }
+    assert_includes error.message, "fields are invalid"
+
     set = registry_set(
       "one" => SequenceSource.new(snapshot("duplicate", 1, [worker("one", "model", 11_441)])),
       "two" => SequenceSource.new(snapshot("duplicate", 1, [worker("two", "model", 11_442)]))
@@ -167,14 +172,67 @@ class MultiSourceWorkerTest < Minitest::Test
     refute_path_exists File.join(@output, "dynamic-workers", "checkpoint.json")
   end
 
+  def test_restart_recovers_source_checkpoints_without_rebinding_retained_attempts
+    original = worker("shared", "model", 11_441)
+    peer = worker("shared", "model", 11_442)
+    changed = original.merge("generation_id" => "generation-2")
+    plan = plan_for([pool("model")], [plan_job("running", "model"), plan_job("terminal", "model")])
+    store = prepared_store(plan)
+    registry_set(
+      "alpha" => SequenceSource.new(snapshot("alpha-registry", 4, [original])),
+      "beta" => SequenceSource.new(snapshot("beta-registry", 9, [peer]))
+    ).poll_once.current_workers.zip(plan.jobs).each do |entry, job|
+      attempt = store.record_dynamic_running!(job:, worker: entry, environment_keys: [])
+      store.record_dynamic_terminal!(attempt:, status: "complete", exit_status: 0) if job.id == "terminal"
+    end
+    retained = plan.jobs.to_h { |job| [job.id, store.metadata_for(job)] }
+    checkpoints = Dir.glob(File.join(@output, "dynamic-workers/sources/*/checkpoint.json"))
+                     .to_h { |path| [path, File.binread(path)] }
+
+    reloaded_store = WorkloadOrchestrator::ExecutionStore.new(output_dir: @output, plan:, workdir: @workdir)
+    reloaded_store.prepare!
+    reloaded = registry_set(
+      "alpha" => SequenceSource.new(
+        snapshot("alpha-registry", 3, [original]),
+        snapshot("alpha-registry", 4, [changed]),
+        snapshot("alpha-registry", 5, [changed], published_at: "2030-01-01T00:00:40Z")
+      ),
+      "beta" => SequenceSource.new(
+        snapshot("beta-registry", 10, [peer], published_at: "2030-01-01T00:00:10Z"),
+        snapshot("beta-registry", 11, [peer], published_at: "2030-01-01T00:00:20Z"),
+        snapshot("beta-registry", 12, [peer], published_at: "2030-01-01T00:00:40Z")
+      )
+    )
+    assert_equal({ "alpha" => 4, "beta" => 9 }, reloaded.source_checkpoints.transform_values { |row| row.fetch("revision") })
+    checkpoints.each { |path, bytes| assert_equal bytes, File.binread(path) }
+    2.times do |index|
+      reloaded.poll_once
+      assert_equal 4, reloaded.source_checkpoints.dig("alpha", "revision")
+      assert_equal 10 + index, reloaded.source_checkpoints.dig("beta", "revision")
+      assert_equal "failure", reloaded.source_health.dig("alpha", "last_poll_result")
+      assert_equal checkpoints.fetch(File.join(@output, "dynamic-workers/sources/alpha/checkpoint.json")),
+                   File.binread(File.join(@output, "dynamic-workers/sources/alpha/checkpoint.json"))
+    end
+    assert_includes reloaded.source_health.dig("alpha", "failure_reason"), "changed contents"
+    reloaded.poll_once
+    events = WorkloadOrchestrator::DynamicWorkerLossReconciler.new(store: reloaded_store).reconcile!(reloaded)
+    assert_equal ["running"], events.map { |event| event.fetch("job_id") }
+    assert_equal %w[failed complete], plan.jobs.map { |job| reloaded_store.metadata_for(job).fetch("status") }
+    plan.jobs.each do |job|
+      %w[worker_execution_identity worker_registry_binding worker_snapshot].each do |key|
+        assert_equal retained.fetch(job.id).fetch(key), reloaded_store.metadata_for(job).fetch(key), key
+      end
+    end
+  end
+
   def test_v03_cli_runs_local_remote_and_mixed_fake_publishers_without_adventure_finder_code
     now = Time.now.utc
     local_snapshot = snapshot(
-      "local-registry", 1, [worker("worker-1", "local", 11_441)],
+      "local-registry", 1, boundary_workers("local", 11_441),
       published_at: (now - 2).iso8601, expires_at: (now + 300).iso8601
     )
     remote_snapshot = snapshot(
-      "remote-registry", 1, [worker("worker-1", "remote", 11_442)],
+      "remote-registry", 1, boundary_workers("remote", 11_442),
       published_at: (now - 2).iso8601, expires_at: (now + 300).iso8601
     )
     local_path = write_snapshot("local.json", local_snapshot)
@@ -200,6 +258,7 @@ class MultiSourceWorkerTest < Minitest::Test
       output = File.join(@tmp, "output-#{name}")
       out = StringIO.new
       err = StringIO.new
+      assert_equal 0, WorkloadOrchestrator::CLI.new(["validate", plan.path], out:, err:).run
       status = WorkloadOrchestrator::CLI.new(
         ["run", plan.path, "--workdir", @workdir, "--output", output,
          "--worker-sources-config", config], out:, err:, worker_poll_interval: 0.001
@@ -208,7 +267,15 @@ class MultiSourceWorkerTest < Minitest::Test
       assert_equal 0, status, "#{name}: #{err.string}"
       identities = plan.jobs.map do |job|
         path = File.join(output, "runs", job.id, "metadata.json")
-        JSON.parse(File.read(path)).dig("worker_execution_identity", "registry_id")
+        metadata = JSON.parse(File.read(path))
+        assert_equal "complete", metadata.fetch("status")
+        identity = metadata.fetch("worker_execution_identity")
+        assert_equal "worker-1", identity.fetch("worker_id")
+        assert_equal "generation-1", identity.fetch("generation_id")
+        expected = worker("worker-1", job.pool_id, job.pool_id == "local" ? 11_441 : 11_442)
+        assert_equal expected.fetch("endpoint"), identity.fetch("endpoint")
+        assert_equal expected.fetch("capability_fingerprint"), identity.fetch("capability_fingerprint")
+        identity.fetch("registry_id")
       end
       assert_equal expected_registries, identities.sort
     end
@@ -216,6 +283,14 @@ class MultiSourceWorkerTest < Minitest::Test
   end
 
   private
+
+  def boundary_workers(model, port)
+    incompatible = worker("incompatible", model, port + 10)
+    incompatible.fetch("capabilities").fetch("ollama").fetch("models").first["context_length"] = 65_536
+    incompatible["capability_fingerprint"] = capability_fingerprint(incompatible)
+    [incompatible, worker("not-ready", model, port + 20).merge("state" => "NOT_READY"),
+     worker("worker-1", model, port)]
+  end
 
   def registry_set(sources)
     entries = sources.map do |name, source|

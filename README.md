@@ -3,6 +3,16 @@
 `workload-orchestrator` (WLO) is a small Ruby project for deterministic,
 resumable execution of declarative command workloads across configured workers.
 
+## Component-owned contracts
+
+WLO owns the [v0.3 plan](contracts/wlo-execution-plan/v0.3/README.md),
+[registry API](contracts/dynamic-worker-registry/v0.1/README.md),
+[capability request](contracts/ollama-capability-request/v0.1/README.md),
+[action check](contracts/wlo-execution-action-check/v0.1/README.md) and
+[named-source configuration](docs/worker-sources.md).
+Run `bundle exec script/boundary-acceptance` for standalone offline local-only,
+remote-only, mixed, source-loss, restart and namespace-collision proofs.
+
 ## Status
 
 WLO's production runtime executes provider-neutral v0.3 plans against one or

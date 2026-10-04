@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "rbconfig"
+
+# Run from this checkout. No publisher implementation or sibling repository is
+# loaded: the tests use generic JSON publishers and opaque command jobs.
+root = File.expand_path("..", __dir__)
+cases = {
+  "local-only / remote-only / mixed" => ["test/multi_source_worker_test.rb", "/test_v03_cli/"],
+  "source-loss / freshness / optional isolation" => ["test/worker_source_policy_test.rb", nil],
+  "restart / rollback / retained attempt identity" => ["test/multi_source_worker_test.rb", "/test_restart_/"],
+  "namespace collision / independent checkpoints" => ["test/multi_source_worker_test.rb", "/test_(union_|duplicate_|worker_disappearance_)/"],
+  "domain and import boundary" => ["test/bd05_domain_independence_test.rb", nil]
+}
+failed = []
+cases.each do |name, (file, filter)|
+  puts "BOUNDARY #{name}"
+  $stdout.flush
+  argv = [RbConfig.ruby, "-Ilib:test", file]
+  argv += ["--name", filter] if filter
+  passed = system(*argv, chdir: root)
+  puts "#{passed ? 'PASS' : 'FAIL'} #{name}"
+  failed << name unless passed
+end
+abort "Boundary acceptance failed: #{failed.join(', ')}" unless failed.empty?
