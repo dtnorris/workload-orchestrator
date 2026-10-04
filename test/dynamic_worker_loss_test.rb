@@ -476,6 +476,32 @@ class DynamicWorkerLossTest < Minitest::Test
                  second.fetch("observed_replacement_identity")
   end
 
+  def test_consumer_demand_counts_uncertainty_through_retry_and_archive
+    poller, old_attempt = running_attempt_then(
+      snapshot(revision: 8, published_at: "2030-01-01T00:00:20Z", workers: [])
+    )
+    reconciler_for.reconcile!(poller)
+    demand = @store.consumer_demand(pool_id: "local-pool", now: NOW)
+    assert_equal 1, demand.fetch("bound_count")
+    assert_equal 1, demand.fetch("uncertain_count")
+    refute demand.fetch("quiescent")
+    @store.authorize_retry!(reason: "reviewed", job_ids: ["job-1"])
+    retry_demand = @store.consumer_demand(pool_id: "local-pool", now: NOW)
+    assert_equal 1, retry_demand.fetch("bound_count")
+    replacement = poller_for(snapshot(revision: 9, published_at: "2030-01-01T00:00:30Z", workers: [@worker_a]))
+    replacement.poll_once
+    second = start_attempt(replacement.current_workers.first)
+    @store.record_dynamic_terminal!(attempt: second, status: "complete", exit_status: 0)
+    @store.finish!
+    archived = @store.consumer_demand(pool_id: "local-pool", now: NOW)
+    assert_equal 1, archived.fetch("bound_count")
+    assert_equal 1, archived.fetch("uncertain_count")
+    refute archived.fetch("quiescent")
+    # Existing ownership retains late evidence without resolving the in-doubt marker.
+    @store.record_dynamic_terminal!(attempt: old_attempt, status: "complete", exit_status: 0)
+    assert_equal 1, @store.consumer_demand(pool_id: "local-pool", now: NOW).fetch("bound_count")
+  end
+
   private
 
   def running_attempt_then(next_snapshot)

@@ -6,12 +6,14 @@ require "time"
 require_relative "dynamic_attempt_state"
 require_relative "execution_retry"
 require_relative "execution_action_check"
+require_relative "consumer_demand"
 require_relative "terminal_import_state"
 
 module WorkloadOrchestrator
   class ExecutionStore
     include ExecutionRetry
     include ExecutionActionCheck
+    include ConsumerDemand
     include TerminalImportState
     include AttemptPersistence
     include DynamicAttemptState

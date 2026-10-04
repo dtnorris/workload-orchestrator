@@ -66,6 +66,7 @@ module WorkloadOrchestrator
       when "plan" then plan_command
       when "worker-check" then worker_check_command
       when "action-check" then action_check_command
+      when "consumer-demand" then consumer_demand_command
       when "start" then run_command(resume: false, detached: true)
       when "run" then run_command(resume: false)
       when "resume" then run_command(resume: true)
@@ -289,6 +290,24 @@ module WorkloadOrchestrator
         @out.puts "#{stream}: #{row.fetch('path')}"
         row.fetch("lines").each { |line| @out.puts line }
       end
+    end
+
+    def consumer_demand_command
+      plan_path = required_argument!("PLAN.json")
+      options = {}
+      OptionParser.new do |opts|
+        opts.on("--workdir DIR") { |value| options[:workdir] = value }
+        opts.on("--output DIR") { |value| options[:output] = value }
+        opts.on("--pool ID") { |value| options[:pool] = value }
+      end.parse!(@argv)
+      reject_extra_arguments!
+      %i[workdir output pool].each do |key|
+        raise OptionParser::MissingArgument, "--#{key}" if options[key].to_s.empty?
+      end
+      plan = load_plan(plan_path)
+      store = ExecutionStore.new(plan:, workdir: options.fetch(:workdir), output_dir: options.fetch(:output))
+      @out.puts JSON.pretty_generate(store.consumer_demand(pool_id: options.fetch(:pool)))
+      0
     end
 
     def action_check_command
@@ -599,6 +618,7 @@ module WorkloadOrchestrator
         workload-orchestrator #{VERSION}
 
         Usage:
+          bin/wlo consumer-demand PLAN.json --workdir DIR --output DIR --pool ID
           bin/wlo validate PLAN.json [--execution-profile FILE]
           bin/wlo plan PLAN.json --workdir DIR [--workers-config FILE]
           bin/wlo worker-check PLAN.json [--workers-config FILE] [--execution-profile FILE]

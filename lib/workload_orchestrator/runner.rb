@@ -113,6 +113,7 @@ module WorkloadOrchestrator
       worker_loss_reconciler.reconcile!(worker_registry_poller)
       @dynamic_scheduler ||= DynamicScheduler.new(plan: plan, store: store) if plan.priority_scheduling?
       worker_registry_poller.run(stop: method(:stop_dynamic_polling?)) do |poller|
+        store.consumer_heartbeat!
         worker_loss_reconciler.reconcile!(poller)
         @live_display.accept_workers(poller.current_workers)
         if dynamic_scheduler && !poller.dispatch_blocked?
