@@ -20,6 +20,7 @@ module WorkloadOrchestrator
       doctor, logs   ONE-SHOT INSPECTION. Interrupting the request changes no lifecycle state.
       pause          CONTROL REQUEST. Stops new WLO dispatch and lets already-running work
                      finish under the existing pause contract; it is not provider teardown.
+      action-check  READ-ONLY INSPECTION. Checks execution action admissibility; changes no state.
       recovery      ONE-SHOT INSPECTION. Reads the bounded recovery history only.
       retry-failed,
       repair,
@@ -64,6 +65,7 @@ module WorkloadOrchestrator
       when "validate" then validate_command
       when "plan" then plan_command
       when "worker-check" then worker_check_command
+      when "action-check" then action_check_command
       when "start" then run_command(resume: false, detached: true)
       when "run" then run_command(resume: false)
       when "resume" then run_command(resume: true)
@@ -274,6 +276,32 @@ module WorkloadOrchestrator
       end
     end
 
+    def action_check_command
+      plan_path = required_argument!("PLAN.json")
+      options = { json: false }
+      OptionParser.new do |opts|
+        opts.on("--workdir DIR") { |value| options[:workdir] = value }
+        opts.on("--output DIR") { |value| options[:output] = value }
+        opts.on("--action ACTION") { |value| options[:action] = value }
+        opts.on("--json") { options[:json] = true }
+        opts.on("--execution-profile FILE") { |value| options[:execution_profile] = value }
+        opts.on("--workers-config FILE") { |value| options[:workers_config] = value }
+      end.parse!(@argv)
+      reject_extra_arguments!
+      %i[workdir output action].each do |key|
+        raise OptionParser::MissingArgument, "--#{key}" if options[key].to_s.strip.empty?
+      end
+      plan = load_bound_plan(plan_path, options)
+      result = recovery_store(plan, options).action_check(options.fetch(:action))
+      if options.fetch(:json)
+        @out.puts JSON.pretty_generate(result)
+      else
+        @out.puts "#{result.fetch('action')}: #{result.fetch('disposition')} (#{result.fetch('reason')})"
+        @out.puts result.fetch("message") if result.key?("message")
+      end
+      0
+    end
+
     def retry_failed_command
       plan_path = required_argument!("PLAN.json")
       options = parse_retry_options
@@ -411,7 +439,7 @@ module WorkloadOrchestrator
 
     def recovery_store(plan, options)
       workers_sha256 = nil
-      if plan.logical?
+      if plan.logical? && !DynamicWorkerCLI.unbound_plan?(plan)
         workers = load_workers_for_plan(options, plan)
         workers.validate_plan!(plan)
         workers_sha256 = workers.execution_sha256(plan)
@@ -578,6 +606,7 @@ module WorkloadOrchestrator
                          [--worker-source-command FILE [--worker-source-arg ARG ...]]
           bin/wlo retry-failed PLAN.json --workdir DIR --output DIR (--all | --job ID ...) --reason TEXT
                                [--acknowledge-circuit-breaker] [--dry-run] [--json]
+          bin/wlo action-check PLAN.json --workdir DIR --output DIR --action ACTION [--json]
           bin/wlo recovery PLAN.json --workdir DIR --output DIR [--json]
           bin/wlo repair PLAN.json --workdir DIR --output DIR --reason TEXT [--dry-run] [--json]
           bin/wlo import-terminal PLAN.json HANDOFF.json --workdir DIR --output DIR

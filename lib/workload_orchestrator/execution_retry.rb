@@ -60,10 +60,14 @@ module WorkloadOrchestrator
             "total_actions" => history.length,
             "actions" => history.last(RECOVERY_HISTORY_LIMIT),
             "truncated" => history.length > RECOVERY_HISTORY_LIMIT,
-            "repair_supported" => false
+            "repair_supported" => repair_supported?
           }
         end
       end
+    end
+
+    def repair_supported?
+      false
     end
 
     def repair!(reason:, dry_run: false)
