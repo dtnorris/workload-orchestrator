@@ -74,6 +74,7 @@ module WorkloadOrchestrator
       when "repair" then repair_command
       when "import-terminal" then import_terminal_command
       when "status", "summary", "watch" then reporting_command(command)
+      when "measurements" then measurements_command
       when "doctor" then doctor_command
       when "logs" then logs_command
       when "pause" then pause_command
@@ -200,6 +201,20 @@ module WorkloadOrchestrator
 
       report = ExecutionReport.new(plan: load_plan(plan_path), output: output)
       human ? report.print(@out, verbose:, width:) : @out.puts(JSON.pretty_generate(report.document))
+      0
+    end
+
+    def measurements_command
+      plan_path = required_argument!("PLAN.json")
+      output = nil
+      OptionParser.new do |opts|
+        opts.on("--output DIR") { |value| output = value }
+      end.parse!(@argv)
+      reject_extra_arguments!
+      raise OptionParser::MissingArgument, "--output DIR" if output.to_s.empty?
+
+      document = ExecutionMeasurements.new(plan: load_plan(plan_path), output: output).document
+      @out.puts(JSON.pretty_generate(document))
       0
     end
 
@@ -596,6 +611,7 @@ module WorkloadOrchestrator
                         [--worker-source-command FILE [--worker-source-arg ARG ...]]
           bin/wlo status PLAN.json --output DIR [--human | --json] [--verbose] [--width COLUMNS]
           bin/wlo summary PLAN.json --output DIR [--json] [--verbose] [--width COLUMNS]
+          bin/wlo measurements PLAN.json --output DIR
           bin/wlo watch PLAN.json --output DIR [--interval SECONDS] [--verbose] [--width COLUMNS]
           bin/wlo doctor PLAN.json JOB --output DIR [--json]
           bin/wlo logs PLAN.json JOB --output DIR [--lines N] [--json]
