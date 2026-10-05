@@ -18,6 +18,8 @@ module WorkloadOrchestrator
     MODEL_KEYS = %w[model digest context_length fully_gpu_resident].freeze
     STATES = %w[READY NOT_READY UNAVAILABLE].freeze
     SHA256 = /\A[0-9a-f]{64}\z/
+    ID = /\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z/
+    TIMESTAMP = /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/
 
     class DuplicateKeyHash < Hash
       def []=(key, value)
@@ -71,7 +73,7 @@ module WorkloadOrchestrator
       @contract_version = document.fetch("contract_version")
       raise Error, "worker registry contract must be #{CONTRACT_VERSION}" unless contract_version == CONTRACT_VERSION
 
-      @registry_id = non_empty_string!(document.fetch("registry_id"), "registry_id")
+      @registry_id = identifier!(document.fetch("registry_id"), "registry_id")
       @revision = document.fetch("revision")
       return if revision.is_a?(Integer) && !revision.negative?
 
@@ -93,8 +95,8 @@ module WorkloadOrchestrator
       document.fetch("workers").each_with_index do |record, index|
         label = "worker[#{index}]"
         exact_keys!(record, WORKER_KEYS, label)
-        worker_id = non_empty_string!(record.fetch("worker_id"), "#{label}.worker_id")
-        non_empty_string!(record.fetch("generation_id"), "#{label}.generation_id")
+        worker_id = identifier!(record.fetch("worker_id"), "#{label}.worker_id")
+        non_empty_string!(record.fetch("generation_id"), "#{label}.generation_id", max: 256)
         endpoint_key = endpoint!(record.fetch("endpoint"), "#{label}.endpoint")
         state!(record.fetch("state"), label)
         labels!(record.fetch("labels"), label)
@@ -152,19 +154,32 @@ module WorkloadOrchestrator
       raise Error, "#{label} unknown fields: #{unknown.join(', ')}" unless unknown.empty?
     end
 
-    def non_empty_string!(value, label)
+    def identifier!(value, label)
+      raise Error, "#{label} is invalid" unless value.is_a?(String) && ID.match?(value)
+
+      value
+    end
+
+    def non_empty_string!(value, label, max: nil)
       unless value.is_a?(String) && !value.empty? && value == value.strip && !value.match?(/[[:cntrl:]]/)
         raise Error, "#{label} must be a non-empty trimmed string without control characters"
       end
+      raise Error, "#{label} must be at most #{max} characters" if max && value.length > max
 
       value
     end
 
     def timestamp!(value, label)
-      non_empty_string!(value, label)
-      Time.iso8601(value).freeze
+      unless value.is_a?(String) && TIMESTAMP.match?(value)
+        raise Error, "#{label} must use canonical UTC second precision"
+      end
+
+      parsed = Time.iso8601(value)
+      raise Error, "#{label} must use canonical UTC second precision" unless parsed.utc.iso8601(0) == value
+
+      parsed.freeze
     rescue ArgumentError
-      raise Error, "#{label} must be an ISO 8601 timestamp"
+      raise Error, "#{label} must use canonical UTC second precision"
     end
 
     def coerce_time!(value, label)
@@ -196,20 +211,23 @@ module WorkloadOrchestrator
     def labels!(value, label)
       strings!(value, "#{label}.labels")
       raise Error, "#{label}.labels must be unique" unless value.uniq == value
+      raise Error, "#{label}.labels must be sorted" unless value.sort == value
     end
 
     def capabilities!(value, label)
       exact_keys!(value, CAPABILITY_KEYS, "#{label}.capabilities")
-      non_empty_string!(value.fetch("gpu_id"), "#{label}.capabilities.gpu_id")
+      non_empty_string!(value.fetch("gpu_id"), "#{label}.capabilities.gpu_id", max: 256)
       ollama = value.fetch("ollama")
       exact_keys!(ollama, OLLAMA_KEYS, "#{label}.capabilities.ollama")
       models = ollama.fetch("models")
-      raise Error, "#{label}.capabilities.ollama.models must be an array" unless models.is_a?(Array)
+      unless models.is_a?(Array) && !models.empty?
+        raise Error, "#{label}.capabilities.ollama.models must be a nonempty array"
+      end
 
       model_ids = models.each_with_index.map do |model, model_index|
         model_label = "#{label}.capabilities.ollama.models[#{model_index}]"
         exact_keys!(model, MODEL_KEYS, model_label)
-        model_id = non_empty_string!(model.fetch("model"), "#{model_label}.model")
+        model_id = non_empty_string!(model.fetch("model"), "#{model_label}.model", max: 256)
         digest = model.fetch("digest")
         unless digest.is_a?(String) && SHA256.match?(digest)
           raise Error,
@@ -227,6 +245,11 @@ module WorkloadOrchestrator
         model_id
       end
       raise Error, "#{label}.capabilities.ollama model identifiers must be unique" unless model_ids.uniq == model_ids
+      sorted = models.sort_by do |model|
+        [model.fetch("model"), model.fetch("digest"), model.fetch("context_length"),
+         model.fetch("fully_gpu_resident") ? 1 : 0]
+      end
+      raise Error, "#{label}.capabilities.ollama.models must be sorted" unless sorted == models
     end
 
     def fingerprint!(record, label)

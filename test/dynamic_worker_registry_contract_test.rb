@@ -229,6 +229,33 @@ class DynamicWorkerRegistryContractTest < Minitest::Test
     end
   end
 
+  {
+    "registry ID syntax" => ->(d, _w) { d["registry_id"] = "invalid/id" },
+    "worker ID syntax" => ->(_d, w) { w["worker_id"] = "invalid/id" },
+    "generation length" => ->(_d, w) { w["generation_id"] = "g" * 257 },
+    "GPU length" => ->(_d, w) { w["capabilities"]["gpu_id"] = "g" * 257 },
+    "model length" => ->(_d, w) { w.dig("capabilities", "ollama", "models")[0]["model"] = "m" * 257 },
+    "canonical timestamp" => ->(d, _w) { d["published_at"] = "2030-01-01T00:00:00+00:00" },
+    "sorted labels" => ->(_d, w) { w["labels"].reverse! },
+    "nonempty models" => ->(_d, w) { w.dig("capabilities", "ollama")["models"] = [] },
+    "sorted models" => lambda { |_d, w|
+      models = w.dig("capabilities", "ollama", "models")
+      models << models.first.merge("model" => "aaa:latest")
+    }
+  }.each do |name, mutate|
+    define_method("test_runtime_rejects_normative_violation_#{name.tr(' ', '_')}") do
+      document = fixture_document
+      worker = document.fetch("workers").first
+      mutate.call(document, worker)
+      worker["capability_fingerprint"] = DynamicWorkerRegistryV01::Conformance.capability_fingerprint(worker)
+
+      assert_raises(DynamicWorkerRegistryV01::Conformance::Error, name) do
+        DynamicWorkerRegistryV01::Conformance.validate_document!(document, now: NOW)
+      end
+      assert_raises(WorkloadOrchestrator::Error, name) { load_document(document) }
+    end
+  end
+
   private
 
   def invalid_expectations

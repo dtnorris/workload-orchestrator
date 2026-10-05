@@ -177,7 +177,7 @@ class LiveExecutionDisplayTest < Minitest::Test
     runner = build_runner(source: source, executor: executor)
     assert_equal "paused", runner.run
     completed = runner.store.counts["complete"]
-    ready_b = @record.merge("labels" => @record.fetch("labels") + ["pool-b"])
+    ready_b = @record.merge("labels" => (@record.fetch("labels") + ["pool-b"]).sort)
     ready_b["capability_fingerprint"] = fingerprint(ready_b)
     resumed = build_runner(source: Source.new { snapshot([ready_b], revision: 2) }, executor: ->(*) { command_result })
     assert_equal "completed", resumed.run(resume: true)

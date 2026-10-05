@@ -213,7 +213,7 @@ class Dw28LateCapacityIntegrationTest < Minitest::Test
 
   def fleet(model, port)
     slug = model.delete(":")
-    worker_id = "rpof-#{model}-worker"
+    worker_id = "rpof-#{slug}-worker"
     generation_id = "rpof-#{model}-generation-1"
     {
       "fleet_id" => "dw28-#{slug}",
@@ -339,7 +339,7 @@ class Dw28LateCapacityIntegrationTest < Minitest::Test
     snapshot = metadata.fetch("worker_snapshot")
     expected_identity = {
       "registry_id" => "rpof-dw28",
-      "worker_id" => "rpof-#{REQUIRED_MODEL}-worker",
+      "worker_id" => "rpof-#{REQUIRED_MODEL.delete(':')}-worker",
       "generation_id" => "rpof-#{REQUIRED_MODEL}-generation-1",
       "endpoint" => "http://127.0.0.1:11441",
       "capability_fingerprint" => snapshot.fetch("capability_fingerprint")

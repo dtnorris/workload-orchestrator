@@ -232,8 +232,8 @@ class DynamicCliTest < Minitest::Test
         "contract_version" => "dynamic-worker-registry/v0.1",
         "registry_id" => "dynamic-cli-registry",
         "revision" => count,
-        "published_at" => (now - 120 + count).iso8601(6),
-        "expires_at" => (now + 300).iso8601(6),
+        "published_at" => (now - 120 + count).iso8601(0),
+        "expires_at" => (now + 300).iso8601(0),
         "workers" => workers
       ))
     RUBY
