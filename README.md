@@ -77,6 +77,10 @@ v0.2 compatibility examples, CLI, and resume rules.
 
 ## Operator commands
 
+The canonical [WLO operator runbook](docs/operator-workflow.md) covers public
+action admissibility, measurements, consumer demand, execution and recovery.
+Provider lifecycle and domain result interpretation stay with their owners.
+
 Use `bin/wlo start` for detached execution and `bin/wlo summary` for a readable
 progress/result report. Each launch retains its manager PID, log and exit result.
 See [the operator workflow](docs/operator-workflow.md) for pause, detached resume,
@@ -201,10 +205,12 @@ pause and wait for the runner to exit with no running jobs. When upgrading an
 existing execution to this version, stop the old runner before using retry;
 older runners do not participate in the new execution-wide lock.
 
+Set `PLAN`, `WORKDIR` and `OUTPUT` to the original public execution inputs.
+
 ```bash
-bin/wlo retry-failed PLAN.json \
-  --workdir /absolute/original/workdir \
-  --output /absolute/original/output \
+bin/wlo retry-failed "$PLAN" \
+  --workdir "$WORKDIR" \
+  --output "$OUTPUT" \
   --all \
   --reason "Repaired the cause after reviewing failed-job logs" \
   --acknowledge-circuit-breaker
@@ -223,7 +229,7 @@ Preview exact selection, evidence hashes, archive paths, and breaker state witho
 mutation by adding `--dry-run --json`. Inspect the durable bounded history with:
 
 ```bash
-bin/wlo recovery PLAN.json --workdir WORKDIR --output OUTPUT
+bin/wlo recovery "$PLAN" --workdir "$WORKDIR" --output "$OUTPUT"
 ```
 
 WLO currently has no deterministic retained-metadata repair transformation.
@@ -237,20 +243,10 @@ jobs and failed/interrupted jobs not selected for retry remain untouched.
 Attempt numbers increase when a new attempt actually starts. Normal resume alone still does
 not retry failures or interruptions.
 
-Before authorizing a retry, WLO copies each selected attempt's `metadata.json`,
-`stdout.log`, and `stderr.log` (when present) to
-`OUTPUT/attempts/JOB_ID/attempt-N/`. Those snapshots are never overwritten.
-`OUTPUT/runs/JOB_ID/` continues to contain the latest attempt. The original
-failed metadata remains there until the retry starts; `wlo status` and
-`jobs.json` report the authorized job as pending in the meantime.
-
-`execution.json` retains revisioned `retry_history` records using
-`wlo-recovery-action/v0.1`: deterministic action ID, timestamp,
-operator-supplied reason, selected job IDs, prior status/attempt, archive path,
-SHA-256 evidence and metadata hashes, interruption uncertainty, and the breaker
-state before acknowledgement. Breaker acknowledgement resets counters and
-advances its generation while preserving its trip history. Without
-acknowledgement, existing counters remain in force.
+Use the public retry preview for exact selection and evidence hashes, and
+`wlo recovery` for the retained `wlo-recovery-action/v0.1` history. Prior
+attempt evidence is preserved. Operators do not need to read or edit private
+execution/attempt storage to authorize reviewed recovery.
 
 The execution-wide lock excludes concurrent run/resume/retry operations.
 Retry authorization is an atomic state update after all archives succeed.

@@ -1,10 +1,50 @@
-# Local operator workflow
+# WLO operator runbook
 
 WLO owns starting, observing, pausing, resuming and retrying generic workloads.
 These commands use the same plan, execution lock, job claims and breaker as
 foreground execution. Production v0.3 runs use a provider-neutral dynamic
-worker registry; execution profiles and their worker checks or paid-budget
-options apply only to v0.1/v0.2 compatibility paths.
+worker registry. Historical provider-specific profiles remain inspectable but
+cannot execute; their old paid/provider flags are removed.
+
+Run from the exact chosen WLO checkout with its installed Ruby bundle. Set
+`PLAN`, `WORKDIR`, `OUTPUT` and `SOURCES` to the original public plan, workload
+root, execution output root and named-source configuration. Paths must remain
+the same through inspection, pause and resume. Quote paths with spaces.
+Plan commands are executable input: inspect the actual HEAD and working tree
+before execution, and use only trusted frozen plans.
+
+## Public inspection and ownership contracts
+
+**Read-only / inspect:**
+
+```bash
+bin/wlo validate "$PLAN"
+bin/wlo plan "$PLAN" --workdir "$WORKDIR"
+bin/wlo action-check "$PLAN" --workdir "$WORKDIR" --output "$OUTPUT" --action run --json
+bin/wlo measurements "$PLAN" --output "$OUTPUT"
+bin/wlo consumer-demand "$PLAN" --workdir "$WORKDIR" --output "$OUTPUT" --pool "$POOL_ID"
+```
+
+Set `POOL_ID` to an exact plan pool. Measurements/demand require the appropriate
+retained execution evidence; they do not create a runner or heartbeat.
+Use [action check v0.1](../contracts/wlo-execution-action-check/v0.1/README.md)
+for run/resume/retry/recovery/repair admissibility. Exit 0 can contain `blocked`;
+inspect disposition/reason, not just command success. A check reserves nothing;
+the real action revalidates under its normal locks.
+Use [measurements v0.1](execution-measurements-v0.1.md) for measured execution
+facts and [consumer demand v0.1](../contracts/wlo-consumer-demand/v0.1/README.md)
+for generic demand/liveness. Missing/stale/uncertain consumer proof is not zero
+bound work or release permission.
+
+WLO owns the [v0.3 plan](../contracts/wlo-execution-plan/v0.3/README.md),
+[capability request](../contracts/ollama-capability-request/v0.1/README.md),
+[registry](../contracts/dynamic-worker-registry/v0.1/README.md) and
+[named-source configuration](worker-sources.md). A publisher's public CLI
+returns registry JSON; operators need no sibling implementation source.
+
+**Retained-state/workload mutation:** run/start/resume, pause, retry-failed and
+import-terminal change WLO-owned evidence/control. None authorizes paid
+capacity. Retry with `--dry-run` and recovery/status/doctor/logs are inspection.
 
 ## Command ownership and human control
 
@@ -21,7 +61,7 @@ domain ownership:
 
 | Command | Classification | What remains after return | Ctrl-C / terminal loss | Intentional different action |
 | --- | --- | --- | --- | --- |
-| `run`, `resume` | FOREGROUND WORK OWNER | No WLO manager is detached. | Ctrl-C stops new dispatch, wakes polling, sends TERM to each execution-owned job process group, escalates surviving groups to KILL after one second, reaps direct children, and retains partial output plus `interrupted` attempt evidence. A second Ctrl-C skips the remaining grace interval. | Use `pause --output OUTPUT` for a graceful drain that never signals running jobs. Use provider tooling separately for capacity teardown. |
+| `run`, `resume` | FOREGROUND WORK OWNER | No WLO manager is detached. | Ctrl-C stops new dispatch, wakes polling, sends TERM to each execution-owned job process group, escalates surviving groups to KILL after one second, reaps direct children, and retains partial output plus `interrupted` attempt evidence. A second Ctrl-C skips the remaining grace interval. | Use `pause --output "$OUTPUT"` for a graceful drain that never signals running jobs. Use provider tooling separately for capacity teardown. |
 | `start` | DETACHED WORK LAUNCHER | The manager owns execution and continues in its own Unix session after the initiating CLI or terminal exits. | Ctrl-C after startup acknowledgement affects only the shell, not the manager. Abrupt manager death has no crash recovery or child-cancellation guarantee. | Use `pause` for WLO work and the applicable provider command for capacity. |
 | `watch` | READ-ONLY OBSERVER | Any foreground or detached WLO runner, jobs, publisher processes, and provider resources continue unchanged. | Ctrl-C closes only the view. It does not pause/cancel work and does not tear down capacity. | Use `pause` or the applicable provider teardown command. |
 | `status`, `summary` | ONE-SHOT INSPECTION | All existing execution and provider processes/resources continue. | Interrupting the request has no lifecycle meaning. | Use `pause` or provider teardown explicitly. |
@@ -46,39 +86,39 @@ Inspect an unbound v0.3 plan without a profile, worker configuration or live
 registry:
 
 ```bash
-bin/wlo plan PLAN.json --workdir /absolute/path/to/workload
+bin/wlo plan "$PLAN" --workdir "$WORKDIR"
 ```
 
 Run the plan against the configured local, remote or mixed registry set:
 
 ```bash
-bin/wlo run PLAN.json \
-  --workdir /absolute/path/to/workload \
-  --output /absolute/path/to/output \
-  --worker-sources-config /absolute/path/to/worker-sources.yml
+bin/wlo run "$PLAN" \
+  --workdir "$WORKDIR" \
+  --output "$OUTPUT" \
+  --worker-sources-config "$SOURCES"
 ```
 
 See [named worker sources](worker-sources.md) and the checked-in single-source
 and multi-source examples. WLO invokes each configured argv directly without a
 shell on every poll. Each stdout must be one complete
-`dynamic-worker-registry/v0.1` snapshot with a unique `registry_id`. Nonzero
-exit, malformed output, duplicate namespaces, stale/replayed revision or
-invalid registry data halts dispatch; there is no legacy fallback. The older
+`dynamic-worker-registry/v0.1` snapshot with a unique `registry_id`. Required
+source failure blocks dispatch; optional source failure remains visible without
+blocking healthy capacity. Namespace/revision conflicts fail closed; there is
+no legacy fallback. See the named-source policy for exact classification. The older
 single-command flags remain available only as a one-source compatibility path.
 
-No `--execution-profile`, `--workers-config`, `--paid-budget`,
-`--authorize-paid-rpof` or workload-dispatch `--rpof-executable` option is
-used for this path. WLO selects a compatible READY worker, persists its exact
+Current dynamic execution uses the named-source configuration rather than
+legacy provider-specific execution flags. WLO selects a compatible READY worker, persists its exact
 identity, launches the workload command locally and injects its endpoint as
 `WLO_WORKER_ENDPOINT`.
 
 ## Detached execution
 
 ```bash
-bin/wlo start PLAN.json \
-  --workdir WORKDIR \
-  --output OUTPUT \
-  --worker-sources-config /absolute/path/to/worker-sources.yml
+bin/wlo start "$PLAN" \
+  --workdir "$WORKDIR" \
+  --output "$OUTPUT" \
+  --worker-sources-config "$SOURCES"
 ```
 
 The forked manager retains the immutable command argv and continues polling
@@ -97,19 +137,16 @@ checks then run asynchronously. Use `summary` to distinguish work in progress,
 readiness failure and final completion. Invalid inputs, changed execution
 identity or a competing runner return an error before a launch is acknowledged.
 
-Each launch writes `manager/UUID.log` and `manager/UUID.json` under OUTPUT.
-The launch record contains PID, start/finish times, status, exit status and any
-manager error. `manager.json` points to the latest launch. Earlier launch records
-and logs remain intact through resume. Environment values are not copied into
-manager records. Job stdout/stderr remain under `runs/JOB_ID/` as before;
-they become available after each command exits.
+Use the returned launch identity and public status/summary for manager progress,
+logs and final exit result. Preserve earlier execution evidence through resume;
+do not inspect or edit private manager/attempt storage to infer safe recovery.
 
 ## Check progress and results
 
 ```bash
-bin/wlo summary PLAN.json --output OUTPUT
-bin/wlo status PLAN.json --output OUTPUT --human
-bin/wlo status PLAN.json --output OUTPUT --json
+bin/wlo summary "$PLAN" --output "$OUTPUT"
+bin/wlo status "$PLAN" --output "$OUTPUT" --human
+bin/wlo status "$PLAN" --output "$OUTPUT" --json
 ```
 
 For priority-pool plans, `summary` and `status --human` default to a compact
@@ -141,7 +178,7 @@ Latest-run elapsed time excludes readiness checks and previous paused periods.
 For a continuously refreshed consolidated view, use:
 
 ```bash
-bin/wlo watch PLAN.json --output OUTPUT [--interval SECONDS] [--verbose] [--width COLUMNS]
+bin/wlo watch "$PLAN" --output "$OUTPUT" --interval 1 --verbose --width 72
 ```
 
 The default interval is one second. Interactive terminals redraw the stable
@@ -151,16 +188,11 @@ view. The watcher exits automatically for `completed`, `workload_failed`, and
 `interrupted` executions, and Ctrl-C exits the watcher without interrupting the
 execution.
 
-`watch` reads `execution.json`, `jobs.json`, current running-attempt metadata,
-the pause sentinel, the execution lock, optional manager records, and all last
-accepted per-source checkpoints (with legacy single-checkpoint fallback). It
-does not instantiate a runner or poller, contact a publisher, claim work, or
-write execution state. Busy workers are
-matched to running attempts by their complete execution identity, including
-generation and capability fingerprint. New checkpoints retain the validated
-DW-19 worker snapshot so the existing scheduler can derive compatible capacity;
-legacy checkpoints remain readable and are labeled when exact eligibility is
-unavailable.
+`watch` composes WLO-owned retained reporting without polling publishers,
+claiming jobs or writing execution state. It preserves exact worker generation
+and capability identity. Historical evidence remains readable and is labeled
+when eligibility cannot be established. Use public status/doctor to inspect
+source health; no private retained-file reading is needed.
 
 ## Foreground cancellation
 
@@ -188,8 +220,8 @@ changes provider capacity.
 ## Pause, resume and retry
 
 ```bash
-bin/wlo pause --output OUTPUT
-bin/wlo summary PLAN.json --output OUTPUT
+bin/wlo pause --output "$OUTPUT"
+bin/wlo summary "$PLAN" --output "$OUTPUT"
 ```
 
 Pause requests stop further dispatch and allow active jobs to finish. Wait for
@@ -197,11 +229,11 @@ Pause requests stop further dispatch and allow active jobs to finish. Wait for
 Then resume the same execution in the background:
 
 ```bash
-bin/wlo start PLAN.json \
+bin/wlo start "$PLAN" \
   --resume \
-  --workdir WORKDIR \
-  --output OUTPUT \
-  --worker-sources-config /absolute/path/to/worker-sources.yml
+  --workdir "$WORKDIR" \
+  --output "$OUTPUT" \
+  --worker-sources-config "$SOURCES"
 ```
 
 Supply the dynamic source configuration again when resuming v0.3; it is
@@ -218,18 +250,14 @@ retries. Start never implicitly retries either state. Foreground `run` and
 
 Use `retry-failed ... --dry-run --json` before authorization to inspect exact
 job IDs, prior status/attempt, evidence hashes, archive destinations and breaker
-state. `wlo recovery PLAN.json --workdir WORKDIR --output OUTPUT` reads the
+state. `wlo recovery "$PLAN" --workdir "$WORKDIR" --output "$OUTPUT"` reads the
 durable action history. `wlo repair` is deliberately distinct: no safe generic
 repair transformation exists today, so preview reports unsupported and mutation
 fails closed without changing evidence.
 
-For a legacy v0.2 RPOF profile, every run/start/resume also supplies the original
-`--paid-budget FILE`, absolute `--rpof-executable FILE`, and
-`--authorize-paid-rpof`. Resume evaluates only the retained Step-6 handoff and
-same budget binding. It never provisions replacement capacity, resets the
-deadline, or widens the cumulative cap. These options are compatibility-only
-and are intentionally absent from normal help; production v0.3 operators manage
-the RPOF campaign externally and give WLO a `WorkerSource`.
+Historical provider-specific profiles cannot execute. Current dynamic capacity
+is managed independently by the provider and discovered through named sources.
+See [legacy compatibility](legacy-rpof-compatibility.md) for read-only history.
 
 Manager exit code is 0 for completed/paused execution, 2 for workload/breaker
 failure, and 1 for manager errors. Read the launch result to learn that code;
@@ -241,3 +269,15 @@ for an orderly stop. Never infer safe resume merely from an old PID.
 
 Keep an existing production run's plan, workdir and output identity. Deployment
 of this feature belongs after that runner has exited or drained to a pause.
+
+## Troubleshooting and stop points
+
+Use `bin/wlo doctor "$PLAN" "$JOB_ID" --output "$OUTPUT" --json` and
+`bin/wlo logs "$PLAN" "$JOB_ID" --output "$OUTPUT" --lines 15` for one
+exact opaque canonical job. See [diagnostics](operator-diagnostics.md).
+Admissibility, lock/identity conflict, interrupted work and breaker failures are
+WLO-owned; inspect public status/action-check before explicit recovery.
+Unavailable or mismatched registry evidence belongs first to the named publisher;
+WLO reports the source failure and does not bootstrap or repair capacity.
+Generic completion says nothing about domain acceptance. Stop on a refusal,
+preserve evidence, and never edit retained state or delete evidence to force resume.
