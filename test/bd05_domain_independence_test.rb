@@ -22,11 +22,15 @@ class Bd05DomainIndependenceTest < Minitest::Test
     script = <<~'RUBY'
       require "json"
       require "workload_orchestrator"
-      forbidden = $LOADED_FEATURES.grep(/(?:adventure[_-]finder|af[_-]workloads|local[_-]ollama[_-]workers|runpod[_-]ollama[_-]fleet)/i)
+      require File.join(ARGV.fetch(0), "test/support/sibling_implementation_boundary")
+      forbidden = SiblingImplementationBoundary.forbidden_features(
+        $LOADED_FEATURES, root: ARGV.fetch(0),
+        pattern: /(?:adventure[_-]finder|af[_-]workloads|local[_-]ollama[_-]workers|runpod[_-]ollama[_-]fleet)/i
+      )
       puts JSON.generate(forbidden)
     RUBY
     stdout, stderr, status = Open3.capture3(
-      RbConfig.ruby, "-I#{File.join(root, 'lib')}", "-e", script, chdir: root
+      RbConfig.ruby, "-I#{File.join(root, 'lib')}", "-e", script, root, chdir: root
     )
 
     assert status.success?, stderr

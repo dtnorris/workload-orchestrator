@@ -144,14 +144,19 @@ class OllamaCapabilityRequestTest < Minitest::Test
   end
 
   def test_parser_has_no_adventurefinder_or_worker_publisher_runtime_dependency
-    script = <<~RUBY
+    root = File.expand_path("..", __dir__)
+    script = <<~'RUBY'
       require "workload_orchestrator/ollama_capability_request"
-      forbidden = $LOADED_FEATURES.grep(/adventure[_-]?finder|local_ollama_workers|runpod_ollama_fleet/i)
+      require File.join(ARGV.fetch(0), "test/support/sibling_implementation_boundary")
+      forbidden = SiblingImplementationBoundary.forbidden_features(
+        $LOADED_FEATURES, root: ARGV.fetch(0),
+        pattern: /adventure[_-]?finder|local_ollama_workers|runpod_ollama_fleet/i
+      )
       abort forbidden.join("\n") unless forbidden.empty?
       puts WorkloadOrchestrator::OllamaCapabilityRequest::CONTRACT_VERSION
     RUBY
     stdout, stderr, status = Open3.capture3(
-      RbConfig.ruby, "-I#{File.expand_path('../lib', __dir__)}", "-e", script
+      RbConfig.ruby, "-I#{File.join(root, 'lib')}", "-e", script, root
     )
 
     assert status.success?, stderr
