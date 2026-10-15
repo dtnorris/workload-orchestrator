@@ -156,14 +156,28 @@ class ExecutionDoctorTest < Minitest::Test
     assert_includes error.message, "unknown job id"
   end
 
+  # Diagnosis inherits the report's fail-closed frozen-plan requirement.
+  def test_missing_frozen_plan_rejects_diagnosis_without_mutating_state
+    write_jobs("pending")
+    File.delete(File.join(@output, "plan.json"))
+    before = File.binread(File.join(@output, "execution.json"))
+    assert_raises(WorkloadOrchestrator::Error) { doctor.diagnose(@job_id) }
+    assert_equal before, File.binread(File.join(@output, "execution.json"))
+    refute_path_exists File.join(@output, "plan.json")
+  end
+
   private
 
   def doctor
     WorkloadOrchestrator::ExecutionDoctor.new(plan: @plan, output: @output)
   end
 
+  # Retain the current plan's bytes and binding, including tests changing versions.
+  # Write diagnostic state overrides; filesystem errors propagate to the test.
   def write_state(overrides = {})
+    File.binwrite(File.join(@output, "plan.json"), @plan.bytes)
     state = {
+      "contract_version" => WorkloadOrchestrator::ExecutionStore::CONTRACT_VERSION, "workdir" => @root,
       "plan_id" => @plan.id, "plan_sha256" => @plan.sha256, "status" => "running",
       "circuit_breaker" => { "tripped" => false, "reason" => nil }
     }.merge(overrides)

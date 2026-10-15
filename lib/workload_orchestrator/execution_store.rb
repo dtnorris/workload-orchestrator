@@ -97,12 +97,15 @@ module WorkloadOrchestrator
       update_execution { |state| state["status"] = "paused" unless terminal_execution?(state) }
     end
 
+    # Explicit manual continuation clears all holds; automatic callers must use
+    # PauseRequests#release! or preserve controls. Returns the clear operation.
     def clear_pause!
-      File.delete(pause_path) if File.file?(pause_path)
+      PauseRequests.new(output_dir).clear_all!
     end
 
+    # Any independent manual/owned hold stops dispatch, including corrupt holds.
     def paused?
-      File.file?(pause_path)
+      PauseRequests.new(output_dir).paused?
     end
 
     def circuit_tripped?

@@ -140,9 +140,12 @@ module WorkloadOrchestrator
       0
     end
 
+    # Execute the requested plan; only foreground resume accepts scoped controls.
+    # Returns the established CLI exit code and propagates invalid options as Error.
     def run_command(resume:, detached: false)
       plan_path = required_argument!("PLAN.json")
-      options = parse_runtime_options(require_output: true, allow_acknowledge: resume || detached, detached: detached)
+      options = parse_runtime_options(require_output: true, allow_acknowledge: resume || detached,
+                                      detached: detached, allow_pause_scope: resume && !detached)
       resume ||= options.fetch(:resume, false)
       raise Error, "breaker acknowledgement requires --resume" if options[:acknowledge] && !resume
 
@@ -161,9 +164,14 @@ module WorkloadOrchestrator
         worker_poll_interval: @worker_poll_interval
       }
       runner = Runner.new(**runner_options)
+      raise Error, "pause continuation scope requires foreground resume" if
+        detached && (options[:release_pause] || options[:preserve_pauses])
       return start_manager(runner, resume, options) if detached
 
-      status = runner.run(resume: resume, acknowledge_circuit_breaker: options.fetch(:acknowledge, false))
+      raise Error, "pause continuation scope requires foreground resume" if
+        !resume && (options[:release_pause] || options[:preserve_pauses])
+      status = runner.run(resume: resume, acknowledge_circuit_breaker: options.fetch(:acknowledge, false),
+                          release_pause: options[:release_pause], preserve_pauses: options.fetch(:preserve_pauses, false))
       if status == "interrupted"
         @err.puts "Execution interrupted; retained evidence written to #{runner.store.output_dir}."
         @err.puts "Provider capacity was not changed."
@@ -483,23 +491,37 @@ module WorkloadOrchestrator
       )
     end
 
+    # Request either a manual pause or an independent token-bound hold. Invalid
+    # ownership or execution evidence raises Error; success returns CLI code 0.
     def pause_command
       output = nil
-      OptionParser.new { |opts| opts.on("--output DIR") { |value| output = value } }.parse!(@argv)
+      token = nil
+      OptionParser.new do |opts|
+        opts.on("--output DIR") { |value| output = value }
+        opts.on("--owner-token TOKEN") { |value| token = value }
+      end.parse!(@argv)
       reject_extra_arguments!
       raise OptionParser::MissingArgument, "--output DIR" if output.to_s.empty?
 
-      pause_existing_output(output)
+      if token
+        identifier = PauseRequests.new(output).request!(token)
+        @out.puts "Pause request ID: #{identifier}"
+      else
+        pause_existing_output(output)
+      end
       @out.puts "Pause requested: #{File.expand_path(output)}"
       0
     end
 
-    def parse_runtime_options(require_output:, allow_acknowledge: false, detached: false)
+    # Parse only the capabilities authorized by this command; missing locators or
+    # unsupported scope flags raise OptionParser errors without execution.
+    def parse_runtime_options(require_output:, allow_acknowledge: false, detached: false, allow_pause_scope: false)
       options = {
         workdir: nil, output: nil, workers_config: nil, acknowledge: false
       }
       parser = OptionParser.new do |opts|
-        add_runtime_options(opts, options, detached: detached, allow_acknowledge: allow_acknowledge)
+        add_runtime_options(opts, options, detached: detached, allow_acknowledge: allow_acknowledge,
+                            allow_pause_scope: allow_pause_scope)
       end
       parser.parse!(@argv)
       raise OptionParser::MissingArgument, "--workdir DIR" if options[:workdir].to_s.empty?
@@ -508,10 +530,15 @@ module WorkloadOrchestrator
       options
     end
 
-    def add_runtime_options(parser, options, detached:, allow_acknowledge:)
+    # Register command-specific runtime options in the supplied parser/hash.
+    def add_runtime_options(parser, options, detached:, allow_acknowledge:, allow_pause_scope:)
       parser.on("--resume") { options[:resume] = true } if detached
       parser.on("--workdir DIR") { |value| options[:workdir] = value }
       parser.on("--output DIR") { |value| options[:output] = value }
+      if allow_pause_scope
+        parser.on("--release-pause TOKEN") { |value| options[:release_pause] = value }
+        parser.on("--preserve-pauses") { options[:preserve_pauses] = true }
+      end
       parser.on("--workers-config FILE") { |value| options[:workers_config] = value }
       parser.on("--execution-profile FILE") { |value| options[:execution_profile] = value }
       DynamicWorkerCLI.add_options(parser, options)

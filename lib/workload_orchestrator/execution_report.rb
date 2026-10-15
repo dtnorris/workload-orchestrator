@@ -58,9 +58,13 @@ module WorkloadOrchestrator
       out.write(ExecutionDashboard.new(width:).render(state))
     end
 
+    # Merge execution/job facts with public independent pause evidence. Returns
+    # a report hash; malformed pause authority propagates Error without mutation.
     def report_document(state, jobs, counts, terminal)
+      pauses = PauseRequests.new(@root).snapshot
       state.merge(
-        "paused" => File.file?(File.join(@root, "control", "pause")), "jobs" => jobs,
+        "paused" => pauses.fetch("operator_pause") || !pauses.fetch("request_ids").empty?,
+        "pause_control" => pauses, "jobs" => jobs,
         "counts" => counts, "total" => jobs.length, "terminal" => terminal,
         "progress_percent" => jobs.empty? ? 100.0 : (100.0 * terminal / jobs.length).round(1),
         "executor_active" => executor_active?, "manager" => manager_record

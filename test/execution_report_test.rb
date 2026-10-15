@@ -14,8 +14,11 @@ class ExecutionReportTest < Minitest::Test
     FileUtils.mkdir_p(@output)
     @plan = write_plan(@root, jobs: [job("one", code: "puts :ok")])
     plan = WorkloadOrchestrator::Plan.load(@plan)
+    # Reports publish execution-bound pause evidence, so retain its real identity.
+    File.binwrite(File.join(@output, "plan.json"), plan.bytes)
     @report = WorkloadOrchestrator::ExecutionReport.new(plan: plan, output: @output)
     @state = {
+      "contract_version" => WorkloadOrchestrator::ExecutionStore::CONTRACT_VERSION, "workdir" => @root,
       "plan_id" => plan.id, "plan_sha256" => plan.sha256, "status" => "running",
       "execution_profile_sha256" => "profile digest", "workers_sha256" => "workers digest",
       "last_run_started_at" => "2026-09-28T12:00:00Z",
@@ -129,6 +132,40 @@ class ExecutionReportTest < Minitest::Test
       assert_equal 0, code, err
       assert_equal human, out
     end
+  end
+
+  # Missing or changed frozen plans cannot produce public pause authority.
+  def test_missing_malformed_or_changed_frozen_plan_fails_closed
+    path = File.join(@output, "plan.json")
+    original = File.binread(path)
+    changed = JSON.parse(original).merge("plan_id" => "different-plan")
+    [nil, "not-json", JSON.generate(changed)].each do |bytes|
+      bytes ? File.binwrite(path, bytes) : File.delete(path)
+      before = File.binread(File.join(@output, "execution.json"))
+      assert_raises(WorkloadOrchestrator::Error) { @report.document }
+      assert_equal before, File.binread(File.join(@output, "execution.json"))
+      bytes ? assert_equal(bytes, File.binread(path)) : refute_path_exists(path)
+      File.binwrite(path, original)
+    end
+  end
+
+  # A matching plan digest alone cannot replace the persisted execution binding.
+  def test_missing_or_invalid_pause_execution_binding_fails_closed
+    [{ "contract_version" => nil }, { "workdir" => nil }, { "workdir" => "relative" }].each do |overrides|
+      write_json("execution.json", @state.merge(overrides))
+      before = File.binread(File.join(@output, "execution.json"))
+      assert_raises(WorkloadOrchestrator::Error) { @report.document }
+      assert_equal before, File.binread(File.join(@output, "execution.json"))
+    end
+  end
+
+  # Corrupt owned holds must remain visible as errors, never empty pause records.
+  def test_corrupt_owned_pause_evidence_fails_closed_without_mutation
+    identifier = WorkloadOrchestrator::PauseRequests.new(@output).request!("a" * 64)
+    path = File.join(@output, "control", "pause-requests", "#{identifier}.json")
+    File.binwrite(path, "not-json")
+    assert_raises(WorkloadOrchestrator::Error) { @report.document }
+    assert_equal "not-json", File.binread(path)
   end
 
   private

@@ -2,6 +2,7 @@
 
 require_relative "test_helper"
 require "digest"
+require "minitest/mock"
 
 class TerminalImportTest < Minitest::Test
   include WloTestSupport
@@ -232,12 +233,16 @@ class TerminalImportTest < Minitest::Test
     output = File.join(@tmp, "batch039-output")
     args = ["import-terminal", plan_path, handoff_path, "--workdir", @workdir, "--output", output]
 
-    assert_equal 0, WorkloadOrchestrator::CLI.new(args, out: StringIO.new, err: StringIO.new).run
-    before = Dir.glob(File.join(output, "**", "*"), File::FNM_DOTMATCH).select { |path| File.file?(path) }
-      .to_h { |path| [path.delete_prefix("#{output}/"), File.binread(path)] }
-    assert_equal 0, WorkloadOrchestrator::CLI.new(args, out: StringIO.new, err: StringIO.new).run
-    assert_equal before, Dir.glob(File.join(output, "**", "*"), File::FNM_DOTMATCH).select { |path| File.file?(path) }
-      .to_h { |path| [path.delete_prefix("#{output}/"), File.binread(path)] }
+    # Re-import refreshes execution timestamps. Hold the clock fixed while
+    # comparing all retained bytes so a wall-clock second cannot race this check.
+    Time.stub(:now, Time.utc(2026, 9, 28, 12)) do
+      assert_equal 0, WorkloadOrchestrator::CLI.new(args, out: StringIO.new, err: StringIO.new).run
+      before = Dir.glob(File.join(output, "**", "*"), File::FNM_DOTMATCH).select { |path| File.file?(path) }
+        .to_h { |path| [path.delete_prefix("#{output}/"), File.binread(path)] }
+      assert_equal 0, WorkloadOrchestrator::CLI.new(args, out: StringIO.new, err: StringIO.new).run
+      assert_equal before, Dir.glob(File.join(output, "**", "*"), File::FNM_DOTMATCH).select { |path| File.file?(path) }
+        .to_h { |path| [path.delete_prefix("#{output}/"), File.binread(path)] }
+    end
 
     rows = JSON.parse(File.read(File.join(output, "jobs.json"))).fetch("jobs")
     assert_equal({ "complete" => 26, "pending" => 166 }, rows.group_by { |row| row.fetch("status") }.transform_values(&:length))

@@ -42,7 +42,12 @@ module WorkloadOrchestrator
       @job_positions = plan.jobs.each_with_index.to_h { |job, index| [job.id, index + 1] }.freeze
     end
 
-    def run(resume: false, acknowledge_circuit_breaker: false)
+    # Run pending work under the execution lock. Scoped resume releases only its
+    # retained token; preserve_pauses grants no control-clearing authority.
+    # Invalid/missing ownership raises Error before dispatch.
+    def run(resume: false, acknowledge_circuit_breaker: false, release_pause: nil, preserve_pauses: false)
+      raise Error, "pause scope requires resume" if !resume && (release_pause || preserve_pauses)
+      raise Error, "choose one pause continuation scope" if release_pause && preserve_pauses
       if plan.priority_scheduling? && !dynamic_workers?
         raise Error, "wlo-execution-plan/v0.3 work-conserving execution requires a dynamic worker source"
       end
@@ -55,7 +60,7 @@ module WorkloadOrchestrator
         install_interrupt_handlers
         reconcile_running_attempts!
         yield if block_given?
-        run_locked(resume, acknowledge_circuit_breaker)
+        run_locked(resume, acknowledge_circuit_breaker, release_pause, preserve_pauses)
       ensure
         wait_for_owned_cancellation
         restore_interrupt_handlers
@@ -64,8 +69,10 @@ module WorkloadOrchestrator
 
     private
 
-    def run_locked(resume, acknowledge_circuit_breaker)
-      prepare_resume!(resume, acknowledge_circuit_breaker)
+    # Apply the selected control authority under the owner lock, then retain
+    # the existing retry, breaker, worker and dispatch checks. Returns status.
+    def run_locked(resume, acknowledge_circuit_breaker, release_pause, preserve_pauses)
+      prepare_resume!(resume, acknowledge_circuit_breaker, release_pause, preserve_pauses)
       if !@interrupt_signal && store.counts["interrupted"].positive?
         raise Error, "interrupted attempts require explicit retry authorization before resume"
       end
@@ -254,10 +261,16 @@ module WorkloadOrchestrator
       end
     end
 
-    def prepare_resume!(resume, acknowledge)
+    # Release only proven caller authority, or preserve all controls; the default
+    # remains explicit manual resume. Breaker authority is still independent.
+    def prepare_resume!(resume, acknowledge, release_pause, preserve_pauses)
       return unless resume
 
-      store.clear_pause!
+      if release_pause
+        PauseRequests.new(store.output_dir).release!(release_pause)
+      elsif !preserve_pauses
+        store.clear_pause!
+      end
       return unless acknowledge
 
       store.acknowledge_circuit_breaker!
