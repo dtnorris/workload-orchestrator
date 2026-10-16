@@ -255,6 +255,33 @@ durable action history. `wlo repair` is deliberately distinct: no safe generic
 repair transformation exists today, so preview reports unsupported and mutation
 fails closed without changing evidence.
 
+For the specifically reviewed migrated Batch 039 snapshot only,
+`script/recover-batch039-workdir.rb` offers an offline, one-time workdir
+metadata migration. It is separate from `wlo repair`; ordinary identity checks
+remain strict. The script pins the complete retained file inventory (sorted
+`[relative path, byte size, SHA-256]` rows hashed as compact JSON), the frozen
+plan, old/new workdirs and the destination AFW HEAD. Any changed/missing/extra
+file, symlink, competing lock, dirty destination or different plan fails closed.
+These pins identify the inspected snapshot, not arbitrary Batch 039 outputs.
+
+After separately reviewing the relocation and stopping all writers, preserve a
+private byte-verified copy and preview **that disposable copy**:
+
+```bash
+ruby script/recover-batch039-workdir.rb --output "$DISPOSABLE_OUTPUT"
+```
+
+Explicit `--apply --reason "Reviewed AFW workdir relocation"` atomically changes
+only `execution.json`, embedding its migration audit and original fingerprints.
+Attempts, results, controls, breaker, retries, interruption and historical manager
+paths remain intact. Reapplication and partial migrations fail closed; preserve
+and review evidence rather than removing files to pass. A pre-rename crash can
+leave a temporary file; a post-rename crash leaves state and audit together.
+This operation proves WLO metadata continuity only. AFW frozen inputs, scorer
+provenance and provider readiness require their owners' separate validation.
+Run public action checks afterward: the retained interruption still blocks
+run/resume. A production application requires separate human authority.
+
 Historical provider-specific profiles cannot execute. Current dynamic capacity
 is managed independently by the provider and discovered through named sources.
 See [legacy compatibility](legacy-rpof-compatibility.md) for read-only history.

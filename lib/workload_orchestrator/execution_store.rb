@@ -90,6 +90,21 @@ module WorkloadOrchestrator
       read_execution.fetch("status")
     end
 
+    # Observe retained execution/attempt interruptions before preparation. The
+    # caller holds the execution lock; the state lock keeps this read consistent.
+    # Returns false for fresh output; malformed retained state raises Error.
+    def unresolved_interruption?
+      with_lock do
+        return false unless File.file?(execution_path)
+
+        state = read_execution
+        validate_action_state!(state)
+        state["status"] == "interrupted" || !!state["interruption"] || counts["interrupted"].positive?
+      end
+    rescue KeyError => e
+      raise Error, "invalid execution state: #{e.message}"
+    end
+
     def pause!
       ensure_prepared!
       FileUtils.mkdir_p(control_dir)

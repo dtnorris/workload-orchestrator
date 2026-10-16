@@ -55,6 +55,7 @@ module WorkloadOrchestrator
       validate_workdir!
       workers.validate_plan!(plan) unless dynamic_workers?
       store.with_execution_lock do
+        ensure_no_unresolved_interruption!
         store.prepare!
         store.restore_dynamic_worker_loss_halt! if dynamic_workers?
         install_interrupt_handlers
@@ -69,13 +70,18 @@ module WorkloadOrchestrator
 
     private
 
+    # Reject unresolved retained interruptions under execution ownership, before
+    # any preparation or control changes. Raises the established retry Error.
+    def ensure_no_unresolved_interruption!
+      return unless store.unresolved_interruption?
+
+      raise Error, "interrupted attempts require explicit retry authorization before resume"
+    end
+
     # Apply the selected control authority under the owner lock, then retain
     # the existing retry, breaker, worker and dispatch checks. Returns status.
     def run_locked(resume, acknowledge_circuit_breaker, release_pause, preserve_pauses)
       prepare_resume!(resume, acknowledge_circuit_breaker, release_pause, preserve_pauses)
-      if !@interrupt_signal && store.counts["interrupted"].positive?
-        raise Error, "interrupted attempts require explicit retry authorization before resume"
-      end
       if dynamic_workers?
         @live_display = LiveExecutionDisplay.new(plan: plan, output: store.output_dir, out: @out)
         @live_display.refresh(resume: resume)
