@@ -54,6 +54,7 @@ class ExecutionDashboardTest < Minitest::Test
       "READY_TO_DISPATCH" => "READY",
       "ALL_COMPATIBLE_WORKERS_BUSY" => "WAIT busy",
       "NO_COMPATIBLE_READY_WORKERS" => "WAIT no-ready",
+      "SOURCE_OFFER_EXCLUDED" => "WAIT excluded",
       "PAUSED" => "PAUSE",
       "CIRCUIT_BREAKER" => "BLOCK breaker"
     }
@@ -62,6 +63,12 @@ class ExecutionDashboardTest < Minitest::Test
       line = render(dashboard_document(pool("pool", pending: 1, reason:))).lines.first
       assert_includes line, label
     end
+  end
+
+  def test_every_pool_reason_has_a_dashboard_label
+    reasons = WorkloadOrchestrator::ExecutionPoolStatus::REASONS
+    labels = WorkloadOrchestrator::ExecutionDashboard::STATE_LABELS
+    assert_empty reasons - labels.keys
   end
 
   def test_widths_are_bounded_and_long_pool_names_truncate_visibly

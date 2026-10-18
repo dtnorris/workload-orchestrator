@@ -11,6 +11,7 @@ module WorkloadOrchestrator
       "RUNNING" => "RUN",
       "READY_TO_DISPATCH" => "READY",
       "NO_COMPATIBLE_READY_WORKERS" => "WAIT no-ready",
+      "SOURCE_OFFER_EXCLUDED" => "WAIT excluded",
       "ALL_COMPATIBLE_WORKERS_BUSY" => "WAIT busy",
       "WORKERS_NOT_READY" => "WAIT not-ready",
       "READY_WORKERS_INCOMPATIBLE" => "WAIT incompatible",
