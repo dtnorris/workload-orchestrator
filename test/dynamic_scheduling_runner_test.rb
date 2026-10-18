@@ -245,7 +245,9 @@ class DynamicSchedulingRunnerTest < Minitest::Test
     assert_equal 3, source.calls
     assert_equal %w[qwen-job gemma-job], calls
     assert_equal({ "complete" => 1, "pending" => 1 }, observations.first)
-    assert_includes observations, { "complete" => 2 }
+    # The final completion may precede the loop's stop check, requiring no
+    # additional sleeper invocation. Assert the durable outcome in either case.
+    assert_equal({ "complete" => 2 }, runner.store.counts)
   end
 
   def test_resume_reuses_execution_and_checkpoint_then_schedules_later_capacity

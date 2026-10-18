@@ -90,7 +90,7 @@ class DynamicLocalDispatchTest < Minitest::Test
     assert_equal "workload_failed", runner.run
     assert_equal %w[exception failure success], observed.keys.sort
     assert_equal({ "complete" => 1, "failed" => 2 }, runner.store.counts)
-    assert_equal %w[execution.json jobs.json plan.json], Dir.children(@output).grep(/\.json\z/).sort
+    assert_equal %w[execution.json jobs.json plan.json source-offers.json], Dir.children(@output).grep(/\.json\z/).sort
     refute runner.respond_to?(:remote_request, true)
     refute runner.respond_to?(:record_remote_result, true)
     observed.each do |id, data|

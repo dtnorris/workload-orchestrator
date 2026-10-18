@@ -116,3 +116,24 @@ tightens existing floors without lowering them.
 The ordinary suite is expected to have zero skips. Scale-sensitive benchmarks
 in workload-producing repositories guard their own algorithms; WLO does not
 add a synthetic benchmark as part of this general test-health contract.
+
+## Named-source offer and drain composed gate
+
+After preserving the complete candidate and recording its required host ACT
+checkpoint, run `bundle exec ruby test/acceptance/fo_wlo_03.rb` through
+`act checkpoint gate FO-WLO-03 --workspace WORKSPACE -- ...`. This explicit
+acceptance gate is separate from the ordinary functional suite and its runtime
+ceiling. It uses sibling isolated LOW/RPOF roots by default; `FO03_LOCAL_ROOT`
+and `FO03_REMOTE_ROOT` can select read-only roots at the pinned revisions in the
+harness. No provider/runtime credentials are inherited by its subprocesses.
+
+The real public publisher components produce both registries from fake external
+observations. WLO consumes those command sources and runs bounded synthetic
+payloads through its real scheduler, claims, subprocess boundary and CLI
+controls. One manager holds local and remote attempts, drains only local,
+continues remote work and re-offers local. Prior successful, failed and retried
+attempt bytes are retained. A second journey deliberately bypasses both consent
+checks and must fail specifically at the source-exclusion assertion; that
+expected failure is caught by the negative-control test. Every gate fixture
+retains original binary logs, publisher bytes, controls, attempts, public
+observations and child status in its printed evidence directory.

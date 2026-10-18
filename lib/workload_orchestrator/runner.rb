@@ -125,7 +125,9 @@ module WorkloadOrchestrator
       @worker_loss_reconciler ||= DynamicWorkerLossReconciler.new(store: store)
       worker_loss_reconciler.reconcile!(worker_registry_poller)
       @dynamic_scheduler ||= DynamicScheduler.new(plan: plan, store: store) if plan.priority_scheduling?
+      start_source_controls if dynamic_scheduler
       worker_registry_poller.run(stop: method(:stop_dynamic_polling?)) do |poller|
+        raise @source_control_error if @source_control_error
         store.consumer_heartbeat!
         worker_loss_reconciler.reconcile!(poller)
         @live_display.accept_workers(poller.current_workers)
@@ -136,6 +138,8 @@ module WorkloadOrchestrator
         end
         @dynamic_schedule_mutex.synchronize { @live_display.refresh }
       end
+      raise @source_control_error if @source_control_error
+
       join_dynamic_threads
       finalize_and_report
     rescue CommandCancelled
@@ -153,47 +157,120 @@ module WorkloadOrchestrator
       @live_display.refresh
       raise
     ensure
+      stop_source_controls
       @dynamic_threads.clear
+    end
+
+    # Register the configured authority and acknowledge live requests independently
+    # of slow publishers. No discovery, inference or provider action runs here.
+    def start_source_controls
+      @source_offers = SourceOffers.new(store.output_dir)
+      @source_offers.register!(@worker_sources, authoritative_spawn: @command_executor.is_a?(OwnedCommandRunner))
+      @source_control_mutex = Mutex.new
+      @source_control_condition = ConditionVariable.new
+      @source_control_stop = false
+      @source_control_error = nil
+      ready = Queue.new
+      @source_control_thread = Thread.new do
+        @source_offers.with_manager_ownership do |session|
+          @source_offers.acknowledge!(session)
+          ready << nil
+          loop do
+            @source_offers.acknowledge!(session)
+            @source_control_mutex.synchronize do
+              break if @source_control_stop
+
+              @source_control_condition.wait(@source_control_mutex, 0.1)
+            end
+            break if @source_control_stop
+          end
+        end
+      rescue Error => error
+        @source_control_error = error
+        ready << error
+        signal_dynamic_activity
+      end
+      error = ready.pop
+      raise error if error
+    end
+
+    # Join only this runner's acknowledgment thread, waking its bounded wait.
+    def stop_source_controls
+      return unless @source_control_thread
+
+      @source_control_mutex.synchronize do
+        @source_control_stop = true
+        @source_control_condition.broadcast
+      end
+      @source_control_thread.value
+      @source_control_thread = nil
     end
 
     def schedule_dynamic_assignments(workers, current_workers: workers)
       return if stop_dispatch?
 
-      @dynamic_schedule_mutex.synchronize do
+      eligible = @source_offers.eligible_workers(workers, worker_registry_poller.source_registry_ids)
+      assignments = @dynamic_schedule_mutex.synchronize do
         return if stop_dispatch?
 
-        dynamic_scheduler.assignments(workers: workers, current_workers: current_workers).each do |assignment|
-          break if stop_dispatch?
+        dynamic_scheduler.assignments(workers: eligible, current_workers: current_workers)
+      end
+      assignments.each do |assignment|
+        break if stop_dispatch?
 
-          attempt = store.record_dynamic_running!(
-            job: assignment.job, worker: assignment.worker,
-            environment_keys: assignment.job.env.keys | [WORKER_ENDPOINT_ENV],
-            placement: {
-              "contract_version" => PLACEMENT_INTERFACE_VERSION,
-              "endpoint_environment_variable" => WORKER_ENDPOINT_ENV
-            }
-          )
-          launch_dynamic_assignment(assignment, attempt)
-        end
+        launch_dynamic_assignment(assignment)
       end
     end
 
-    def launch_dynamic_assignment(assignment, attempt)
+    # A selected job is still pending until its claim and the cross-process
+    # eligibility lock are acquired. Wait for binding/rejection before another
+    # scheduling pass; the source lock remains held through actual spawn.
+    def launch_dynamic_assignment(assignment)
       job = assignment.job
       @live_display.refresh
+      bound = Queue.new
       @dynamic_threads << Thread.new do
-        JobClaim.new(output_dir: store.output_dir).synchronize(job.id) do
-          execute_dynamic_command(job, attempt)
+        notified = false
+        begin
+          JobClaim.new(output_dir: store.output_dir).synchronize(job.id) do
+            name = worker_registry_poller.source_registry_ids.key(assignment.worker.registry_id)
+            @source_offers.dispatch(name) do |release|
+              attempt = @dynamic_schedule_mutex.synchronize do
+                next if stop_dispatch?
+                next unless assignment.worker.expires_at > @worker_registry_clock.call
+
+                recorded = store.record_dynamic_running!(
+                  job: job, worker: assignment.worker,
+                  environment_keys: job.env.keys | [WORKER_ENDPOINT_ENV],
+                  placement: {"contract_version" => PLACEMENT_INTERFACE_VERSION,
+                              "endpoint_environment_variable" => WORKER_ENDPOINT_ENV}
+                )
+                @live_display.refresh
+                recorded
+              end
+              next unless attempt
+
+              notified = true
+              bound << true
+              # Non-native injected executors model start at invocation; public
+              # source controls are refused for that unsupported boundary.
+              release.call unless @command_executor.is_a?(OwnedCommandRunner)
+              execute_dynamic_command(job, attempt) { release.call }
+            end
+          end
+        ensure
+          bound << false unless notified
         end
       end
+      bound.pop
     end
 
-    def execute_dynamic_command(job, attempt)
+    def execute_dynamic_command(job, attempt, &spawned)
       # Consume the identity persisted before launch, never a fresh registry view.
       environment = job.env.merge(
         WORKER_ENDPOINT_ENV => attempt.worker_binding.execution_identity.fetch("endpoint")
       )
-      stdout, stderr, status = @command_executor.call(environment, *job.argv, chdir: workdir)
+      stdout, stderr, status = @command_executor.call(environment, *job.argv, chdir: workdir, &spawned)
       record_dynamic_result(job, attempt, stdout, stderr, status)
     rescue CommandCancelled => e
       @dynamic_schedule_mutex.synchronize do
@@ -367,7 +444,7 @@ module WorkloadOrchestrator
     end
 
     def stop_dispatch?
-      @interrupt_signal || store.paused? || store.circuit_tripped? || store.dispatch_halted?
+      @source_control_error || @interrupt_signal || store.paused? || store.circuit_tripped? || store.dispatch_halted?
     end
 
     def stop_dynamic_polling?

@@ -49,10 +49,14 @@ module WorkloadOrchestrator
       raise Error, "cancellation grace interval must be a nonnegative number"
     end
 
+    # Execute argv with an environment overlay in chdir, returning binary output
+    # streams and Process::Status. An optional block observes actual spawn after
+    # registration, before waiting. Spawn errors and CommandCancelled propagate.
     def call(environment, *argv, chdir:)
       stdout_reader, stdout_writer, stderr_reader, stderr_writer = command_streams
       handle = spawn_handle(environment, argv, chdir, stdout_writer, stderr_writer)
       cancellation = register(handle)
+      yield if block_given?
       stdout_writer.close
       stderr_writer.close
       stdout_thread = Thread.new { stdout_reader.read }

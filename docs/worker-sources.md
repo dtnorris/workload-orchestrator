@@ -78,6 +78,10 @@ rewrites the last accepted checkpoint. `status --json` exposes each configured
 source under `worker_sources`; human status prints the same policy, freshness,
 poll result and blocking state.
 
+An in-progress command is reported as `last_poll_result: polling`. Its retained
+accepted checkpoint remains subject to the same freshness rules, but an
+unfinished observation cannot establish a fully drained source result.
+
 After a failed refresh, a source's last accepted snapshot remains usable only
 until its own `expires_at`. WLO never extends that deadline. Expiry removes
 only that registry's workers from scheduling. Expiry of a required source
@@ -90,3 +94,112 @@ The legacy `--worker-source-command` plus repeated `--worker-source-arg` form
 still configures exactly one source and retains
 `OUTPUT/dynamic-workers/checkpoint.json` for compatible resume and reporting.
 It cannot be combined with `--worker-sources-config`.
+
+## Voluntary offers and graceful source drain
+
+These WLO controls affect **one named optional source in one existing v0.3
+execution**. They do not change publisher readiness, qualification or provider
+ownership. Ollama remains available for personal use. Other WLO executions and
+clients are unaffected; control every relevant execution separately. WLO never
+provisions remote capacity when a source is unavailable; eligible work waits.
+
+The native runner registers its configured source authority in retained execution
+metadata. Existing sources initially use explicitly labeled `legacy/unmanaged`
+scheduling: qualified READY capacity remains eligible for compatibility, but is
+never described as operator-offered. To deliberately adopt consent-based
+scheduling on that running manager, withdraw, offer for two hours, inspect, and
+later re-offer:
+
+```sh
+bin/wlo source-adopt --output OUTPUT --source local
+bin/wlo source-status --output OUTPUT --source local
+bin/wlo source-offer --output OUTPUT --source local --duration 7200
+bin/wlo source-drain --output OUTPUT --source local
+bin/wlo source-status --output OUTPUT --source local
+bin/wlo source-offer --output OUTPUT --source local --duration 7200
+```
+
+Adoption immediately requests exclusion; it does not grant an offer. Once
+adopted, no valid offer means excluded. It needs no manager restart, plan rewrite,
+source configuration change or migration of a live installation. A manager
+already executing older code must first be upgraded through the existing
+operator-managed rollout; an old process cannot implement a new control boundary.
+Sources without registered authority are rejected. Required sources cannot be
+adopted, offered or drained: their existing required-source blocking policy is
+preserved. Injected non-native command executors cannot claim the public start
+boundary and therefore cannot accept source controls.
+
+`--duration` is an integer from 1 through 604800 seconds. Offers perform no
+discovery, bootstrap, model load, inference, workload launch or provider action.
+Qualification and fresh registry evidence remain necessary. Offer consent uses
+both the recorded UTC deadline and a monotonic deadline in the manager
+incarnation that accepted the offer. Restart conservatively excludes retained
+offers, even if their UTC deadline is in the future. Explicitly renew after a
+restart; neither resume, retry nor status renews an offer. Wall-clock rollback
+cannot extend the monotonic lease or revive it after restart.
+
+Repeated adopt/drain is idempotent. Repeating an identical offer retains its
+revision and deadlines, even after expiry or restart. Use `source-offer ...
+--duration SECONDS --renew` to explicitly extend/change an existing offer.
+Offering after drain creates a new revision. Re-offer never retries a failed or
+in-doubt job and never clears a pause, breaker or dispatch halt.
+
+### Acknowledgment and uncertainty
+
+All four commands emit JSON. `requested` contains the durable intent and revision;
+persisting that request alone is **not** scheduler acknowledgment. A runner
+control thread acknowledges independently of publisher polling. `effective` and
+`authoritative_boundary` require a matching revision/eligibility acknowledgment
+from the current manager incarnation, a recent control heartbeat, its occupied
+incarnation lock and an occupied execution lock. An unrelated status/recovery
+lock holder cannot make an old acknowledgment current. A missing/dead/stale manager makes these false. Retained
+acknowledgments are historical evidence, not a current safe-idle claim.
+
+The authoritative boundary is actual subprocess start (`Process.spawn`). A job
+selected before withdrawal remains pending until its claim is acquired and
+eligibility is rechecked. The execution-local control lock serializes request,
+acknowledgment and the interval from attempt binding through subprocess start.
+A request racing an already binding launch waits until that subprocess has
+started; its original attempt then finishes normally. No subprocess for an
+excluded source can start after effective exclusion. A publisher delay/failure
+cannot substitute for acknowledgment. A blocked claim or process-start operation
+may delay acknowledgment; a persisted request must not be reported as effective
+while waiting for that boundary.
+
+`runtime_health` separately exposes publisher freshness/poll failures;
+`offer_eligible` is null for unmanaged sources and boolean for managed sources.
+`scheduling_eligible` describes consent only, not capability matching. Active
+attempt counts come from retained attempt metadata, rather than aggregate demand.
+`inference_running: true` means WLO has recorded active work; null means unknown,
+including idle/dead-manager observations. It does not inspect arbitrary Ollama use.
+`drain_result` is `draining` or `fully_drained` only with live effective exclusion,
+fresh successfully polled publisher evidence and no in-doubt attempt. Otherwise
+it is `uncertain`, even if recorded active count is zero. This is scoped only to
+WLO-owned attempts. Process death or stale/malformed publisher evidence does not
+prove safe idle.
+
+Running records inherited by a new manager are also uncertain, including an
+interruption between binding and subprocess start. A new heartbeat cannot turn
+those records into proof that inference actually started or is still running.
+Archived in-doubt attempts also keep the result uncertain; authorization of a
+retry does not by itself establish that the old inference has stopped.
+
+Ordinary status/summary adds `source_scheduling`, a read-only observation of
+requested consent. Pool readiness keeps qualification counts separate from
+`offer_excluded_idle` and reports `SOURCE_OFFER_EXCLUDED` when otherwise eligible
+idle workers lack consent. These observations may straddle a control update;
+only `source-status` reports the live authoritative acknowledgment boundary.
+
+Polling and loss reconciliation continue for drained sources with their full
+current workers/checkpoints. Disappearance, expiry and changes in generation,
+endpoint, context, digest, residency or fingerprint retain the existing
+[in-doubt and retry rules](dynamic-worker-loss.md). Consent never rewrites an
+attempt identity or publisher fact. Frozen plan/configuration bytes stay intact.
+
+Control metadata binds configured command/environment/workdir/policy authority
+to the validated frozen execution identity and real output directory. Copied or
+foreign outputs, changed configuration, replaced synchronization files, unsafe
+paths and missing/corrupt managed records fail closed. An execution tombstone is
+written before managed intent, so an interrupted adoption or deleted intent
+cannot silently restore legacy scheduling. Such damaged authority requires
+operator review; ordinary commands never infer a repair or permission to run.

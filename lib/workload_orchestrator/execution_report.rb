@@ -22,6 +22,9 @@ module WorkloadOrchestrator
       report["worker_sources"] = WorkerSourceHealth.load_root(
         File.join(@root, "dynamic-workers"), clock: @clock
       )
+      if state.key?("source_offer_authority") || state.key?("offer_managed_sources") || File.exist?(File.join(@root, "source-offers.json"))
+        report["source_scheduling"] = SourceOffers.new(@root, clock: @clock).scheduling_view(report.fetch("worker_sources"))
+      end
       report["pool_status"] = ExecutionPoolStatus.new(
         plan: @plan, output: @root, clock: @clock
       ).document(report)
@@ -46,7 +49,7 @@ module WorkloadOrchestrator
       out.puts "Jobs: #{state.fetch('counts').map { |key, value| "#{key}=#{value}" }.join(' ')}"
       out.puts "Resources: #{state.dig('resource_disposition', 'phase')}" if state["resource_disposition"]
       print_controls(out, state)
-      print_worker_sources(out, state.fetch("worker_sources"))
+      print_worker_sources(out, state.fetch("worker_sources"), state["source_scheduling"])
       print_pools(out, state.fetch("pool_status"))
       print_timing(out, state)
       print_jobs(out, state.fetch("jobs"), state["executor_active"])
@@ -102,7 +105,7 @@ module WorkloadOrchestrator
       out.puts "Breaker: #{state.dig('circuit_breaker', 'reason')}" if state.dig("circuit_breaker", "tripped")
     end
 
-    def print_worker_sources(out, sources)
+    def print_worker_sources(out, sources, scheduling = nil)
       return if sources.empty?
 
       out.puts "Worker sources:"
@@ -110,9 +113,11 @@ module WorkloadOrchestrator
         result = source.fetch("last_poll_result")
         detail = source.fetch("failure_reason")
         detail = " detail=#{detail}" if detail
+        consent = scheduling&.dig("sources", source.fetch("source_name"))
+        offer = consent ? " mode=#{consent['mode']} eligible=#{consent['scheduling_eligible']} expires=#{consent['offer_expires_at'].inspect}" : ""
         out.puts "  #{source.fetch('source_name')} policy=#{source.fetch('policy')} " \
                  "state=#{source.fetch('state')} poll=#{result} " \
-                 "blocking=#{source.fetch('blocking')}#{detail}"
+                 "blocking=#{source.fetch('blocking')}#{offer}#{detail}"
       end
     end
 

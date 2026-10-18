@@ -24,7 +24,7 @@ module WorkloadOrchestrator
       end
       idle = ready - busy
       pending = state.fetch("jobs").select { |row| row["status"] == "pending" }
-      eligible = eligible_idle_workers(idle, pending, state.fetch("jobs"))
+      eligible = eligible_idle_workers(idle.select { |worker| SourceOffers.scheduling_eligible?(state, worker) }, pending, state.fetch("jobs"))
       state.merge(
         "registry_known" => !workers.nil?,
         "ready_workers" => ready.length, "busy_workers" => busy.length,

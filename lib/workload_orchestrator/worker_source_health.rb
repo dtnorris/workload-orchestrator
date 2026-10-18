@@ -10,7 +10,7 @@ module WorkloadOrchestrator
   class WorkerSourceHealth
     CONTRACT_VERSION = "wlo-worker-source-health/v0.1"
     POLICIES = %w[required optional].freeze
-    RESULTS = %w[success failure].freeze
+    RESULTS = %w[success failure polling].freeze
     RECORD_KEYS = %w[
       contract_version source_name policy last_attempted_at last_poll_result failure_reason
     ].freeze

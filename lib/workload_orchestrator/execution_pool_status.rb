@@ -11,6 +11,7 @@ module WorkloadOrchestrator
     REASONS = %w[
       RUNNING
       READY_TO_DISPATCH
+      SOURCE_OFFER_EXCLUDED
       NO_COMPATIBLE_READY_WORKERS
       ALL_COMPATIBLE_WORKERS_BUSY
       WORKERS_NOT_READY
@@ -29,6 +30,7 @@ module WorkloadOrchestrator
     ].freeze
 
     CAPACITY_WAIT_REASONS = %w[
+      SOURCE_OFFER_EXCLUDED
       NO_COMPATIBLE_READY_WORKERS
       ALL_COMPATIBLE_WORKERS_BUSY
       WORKERS_NOT_READY
@@ -115,10 +117,12 @@ module WorkloadOrchestrator
         shared.fetch(:busy_identities).include?(worker.execution_identity)
       end
       idle = compatible - busy
+      excluded = idle.reject { |worker| SourceOffers.scheduling_eligible?(report, worker) }
+      idle -= excluded
       not_ready = shared.fetch(:registry_workers).select { |worker| worker.state == "NOT_READY" }
       not_ready_compatible = not_ready.select { |worker| compatible_except_readiness?(worker, pool) }
       {
-        counts:, compatible:, busy:, idle:, ready_workers:, not_ready:, not_ready_compatible:,
+        counts:, compatible:, busy:, idle:, excluded:, ready_workers:, not_ready:, not_ready_compatible:,
         runnable: runnable_jobs(jobs, report.fetch("jobs"))
       }
     end
@@ -129,6 +133,7 @@ module WorkloadOrchestrator
         registry_error: shared.fetch(:registry_error), required_source: shared.fetch(:required_source),
         compatible: evidence.fetch(:compatible),
         busy: evidence.fetch(:busy), idle: evidence.fetch(:idle),
+        excluded: evidence.fetch(:excluded),
         ready_workers: evidence.fetch(:ready_workers),
         not_ready_compatible: evidence.fetch(:not_ready_compatible)
       }
@@ -142,7 +147,9 @@ module WorkloadOrchestrator
         "ready_incompatible" => evidence.fetch(:ready_workers).length - evidence.fetch(:compatible).length,
         "not_ready" => evidence.fetch(:not_ready).length,
         "unavailable" => shared.fetch(:registry_workers).count { |worker| worker.state == "UNAVAILABLE" }
-      }
+      }.tap do |counts|
+        counts["offer_excluded_idle"] = evidence.fetch(:excluded).length unless evidence.fetch(:excluded).empty?
+      end
     end
 
     def reason_for(report, counts, capacity)
@@ -180,6 +187,7 @@ module WorkloadOrchestrator
       return "NO_ACCEPTED_REGISTRY_SNAPSHOT" unless capacity.fetch(:checkpoint)
       return "NO_RUNNABLE_WORK" if capacity.fetch(:runnable).empty?
       return "READY_TO_DISPATCH" unless capacity.fetch(:idle).empty?
+      return "SOURCE_OFFER_EXCLUDED" unless capacity.fetch(:excluded).empty?
       return "ALL_COMPATIBLE_WORKERS_BUSY" unless capacity.fetch(:compatible).empty? || capacity.fetch(:busy).empty?
       return "WORKERS_NOT_READY" unless capacity.fetch(:not_ready_compatible).empty?
       return "READY_WORKERS_INCOMPATIBLE" unless capacity.fetch(:ready_workers).empty?
