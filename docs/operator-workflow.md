@@ -112,6 +112,12 @@ legacy provider-specific execution flags. WLO selects a compatible READY worker,
 identity, launches the workload command locally and injects its endpoint as
 `WLO_WORKER_ENDPOINT`.
 
+For voluntary capacity, use the execution-local
+[source adopt/offer/drain/status controls](worker-sources.md#voluntary-offers-and-graceful-source-drain).
+Adoption excludes a named optional source until explicitly offered; source drain
+keeps other eligible sources progressing in the same manager. Inspect its live
+acknowledgment and health before claiming WLO-owned work is fully drained.
+
 ## Detached execution
 
 ```bash

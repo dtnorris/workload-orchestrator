@@ -56,8 +56,12 @@ module WorkloadOrchestrator
       raise Error, "worker registry poll interval must be a positive number"
     end
 
+    # Observe one publisher, retaining its accepted checkpoint across failures.
+    # In-progress health cannot establish quiescence. Returns self on success;
+    # invalid publication/transport raises Error after retaining failure health.
     def poll_once
       attempted_at = current_time
+      record_health!(attempted_at:, result: "polling", failure_reason: nil)
       snapshot = @source.latest_snapshot
       now = current_time
       candidate = DynamicWorkerRegistry.new(snapshot, now: now, previous: registry)

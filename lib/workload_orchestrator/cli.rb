@@ -20,6 +20,10 @@ module WorkloadOrchestrator
       doctor, logs   ONE-SHOT INSPECTION. Interrupting the request changes no lifecycle state.
       pause          CONTROL REQUEST. Stops new WLO dispatch and lets already-running work
                      finish under the existing pause contract; it is not provider teardown.
+      source-adopt, source-offer, source-drain
+                     SOURCE CONTROL REQUEST. Changes new assignment eligibility for one
+                     optional named source in this execution. Running work finishes normally.
+      source-status  ONE-SHOT INSPECTION. Reports source consent, acknowledgment and health.
       action-check  READ-ONLY INSPECTION. Checks execution action admissibility; changes no state.
       recovery      ONE-SHOT INSPECTION. Reads the bounded recovery history only.
       retry-failed,
@@ -79,6 +83,7 @@ module WorkloadOrchestrator
       when "doctor" then doctor_command
       when "logs" then logs_command
       when "pause" then pause_command
+      when "source-adopt", "source-offer", "source-drain", "source-status" then source_control_command(command)
       else raise Error, "unknown command #{command.inspect}; run bin/wlo --help"
       end
     end
@@ -513,6 +518,34 @@ module WorkloadOrchestrator
       0
     end
 
+    # Operate on one registered source in an existing execution only. Controls
+    # never execute discovery commands or start work; JSON distinguishes durable
+    # request from live acknowledgment. Invalid authority/options return code 1.
+    def source_control_command(command)
+      options = {}
+      OptionParser.new do |parser|
+        parser.on("--output DIR") { |value| options[:output] = value }
+        parser.on("--source NAME") { |value| options[:source] = value }
+        if command == "source-offer"
+          parser.on("--duration SECONDS") { |value| options[:duration] = value }
+          parser.on("--renew") { options[:renew] = true }
+        end
+      end.parse!(@argv)
+      reject_extra_arguments!
+      %i[output source].each do |key|
+        raise OptionParser::MissingArgument, "--#{key}" if options[key].to_s.empty?
+      end
+      offers = SourceOffers.new(options.fetch(:output))
+      row = if command == "source-status"
+              offers.snapshot(options.fetch(:source))
+            else
+              offers.request!(options.fetch(:source), action: command.delete_prefix("source-"),
+                              duration: options[:duration], renew: options.fetch(:renew, false))
+            end
+      @out.puts JSON.pretty_generate(row)
+      0
+    end
+
     # Parse only the capabilities authorized by this command; missing locators or
     # unsupported scope flags raise OptionParser errors without execution.
     def parse_runtime_options(require_output:, allow_acknowledge: false, detached: false, allow_pause_scope: false)
@@ -663,6 +696,10 @@ module WorkloadOrchestrator
           bin/wlo doctor PLAN.json JOB --output DIR [--json]
           bin/wlo logs PLAN.json JOB --output DIR [--lines N] [--json]
           bin/wlo pause --output DIR
+          bin/wlo source-adopt --output DIR --source NAME
+          bin/wlo source-offer --output DIR --source NAME --duration SECONDS [--renew]
+          bin/wlo source-drain --output DIR --source NAME
+          bin/wlo source-status --output DIR --source NAME
           bin/wlo resume PLAN.json --workdir DIR --output DIR [--workers-config FILE] [--acknowledge-circuit-breaker]
                          [--execution-profile FILE]
                          [--worker-sources-config FILE]

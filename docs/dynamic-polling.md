@@ -44,9 +44,11 @@ performs these actions in order:
 3. reconcile each running dynamic attempt against the accepted checkpoint for
    its exact `registry_id`;
 4. if every required source has fresh accepted evidence and dispatch otherwise
-   remains allowed, run the DW-11 scheduler against the immutable current and
-   READY worker views;
-5. durably bind and launch the selected assignments;
+   remains allowed, filter the READY assignment view through execution-local
+   [source offers](worker-sources.md#voluntary-offers-and-graceful-source-drain),
+   keeping the full current-worker view for running-binding validation;
+5. select assignments, acquire each claim, recheck source consent and snapshot
+   expiry, then durably bind and start under the cross-process control lock;
 6. inspect the authoritative job and execution state; and
 7. when work remains, wait for attempt activity or the configured poll interval
    before polling and scheduling again.

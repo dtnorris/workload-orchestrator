@@ -316,7 +316,7 @@ class Dw29FourPoolConcurrencyIntegrationTest < Minitest::Test
 
   def assert_running_wave(runner, plan, published)
     assert_equal({ "running" => 6 }, runner.store.counts)
-    assert_equal %w[execution.json jobs.json plan.json],
+    assert_equal %w[execution.json jobs.json plan.json source-offers.json],
                  Dir.children(@output).grep(/\.json\z/).sort
     assert_equal 1, Dir[File.join(@tmp, "**", "execution.json")].length
     assert_same runner.store, runner.dynamic_scheduler.store
