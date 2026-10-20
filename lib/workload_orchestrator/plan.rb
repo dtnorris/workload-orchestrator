@@ -8,7 +8,9 @@ module WorkloadOrchestrator
     CONTRACT_VERSION = "wlo-execution-plan/v0.1"
     LOGICAL_CONTRACT_VERSION = "wlo-execution-plan/v0.2"
     PRIORITY_CONTRACT_VERSION = "wlo-execution-plan/v0.3"
-    LOGICAL_CONTRACT_VERSIONS = [LOGICAL_CONTRACT_VERSION, PRIORITY_CONTRACT_VERSION].freeze
+    MINIMUM_CONTEXT_CONTRACT_VERSION = "wlo-execution-plan/v0.4"
+    PRIORITY_CONTRACT_VERSIONS = [PRIORITY_CONTRACT_VERSION, MINIMUM_CONTEXT_CONTRACT_VERSION].freeze
+    LOGICAL_CONTRACT_VERSIONS = [LOGICAL_CONTRACT_VERSION, *PRIORITY_CONTRACT_VERSIONS].freeze
     SUPPORTED_CONTRACT_VERSIONS = [CONTRACT_VERSION, *LOGICAL_CONTRACT_VERSIONS].freeze
     LEGACY_SCHEDULING = :legacy
     WORK_CONSERVING_PRIORITY_SCHEDULING = :work_conserving_priority
@@ -29,6 +31,19 @@ module WorkloadOrchestrator
     REQUIREMENT_KEYS = %w[ollama].freeze
     OLLAMA_KEYS = %w[model expected_digest].freeze
     OLLAMA_CAPABILITY_KEYS = %w[required_context_length require_fully_gpu_resident required_gpu_id].freeze
+    MINIMUM_CONTEXT_CAPABILITY_KEYS = [*OLLAMA_CAPABILITY_KEYS, "minimum_context_length"].freeze
+
+    # Reject ambiguous v0.4 JSON objects at any depth. Inputs are JSON key/value
+    # pairs; assignment returns the value or raises JSON::ParserError on reuse.
+    class DuplicateKeyHash < Hash
+      # Store a parsed JSON pair or raise ParserError if its key already exists.
+      def []=(key, value)
+        raise JSON::ParserError, "duplicate object key #{key.inspect}" if key?(key)
+
+        super
+      end
+    end
+    private_constant :DuplicateKeyHash
 
     Pool = Struct.new(
       :id, :worker_names, :required_labels, :ollama_requirement, :max_concurrency,
@@ -65,8 +80,9 @@ module WorkloadOrchestrator
       LOGICAL_CONTRACT_VERSIONS.include?(contract_version)
     end
 
+    # Return whether this validated plan uses v0.3 priority rules; no errors.
     def priority_scheduling?
-      contract_version == PRIORITY_CONTRACT_VERSION
+      PRIORITY_CONTRACT_VERSIONS.include?(contract_version)
     end
 
     def scheduling_semantics
@@ -81,7 +97,7 @@ module WorkloadOrchestrator
 
     def job_priority_key(job_or_id)
       unless priority_scheduling?
-        raise Error, "deterministic job priority keys are defined only for wlo-execution-plan/v0.3"
+        raise Error, "deterministic job priority keys require wlo-execution-plan/v0.3 or v0.4"
       end
 
       id = job_or_id.respond_to?(:id) ? job_or_id.id : job_or_id.to_s
@@ -111,10 +127,15 @@ module WorkloadOrchestrator
 
     private
 
+    # Parse plan JSON bytes without rewriting them. v0.4 rejects duplicate keys;
+    # malformed objects/JSON raise Error, preserving historical reader behavior.
     def parse_document(bytes)
       document = JSON.parse(bytes)
       raise Error, "execution plan must be a JSON object" unless document.is_a?(Hash)
 
+      if document["contract_version"] == MINIMUM_CONTEXT_CONTRACT_VERSION
+        document = JSON.parse(bytes, object_class: DuplicateKeyHash)
+      end
       document.transform_keys(&:to_s)
     rescue JSON::ParserError => e
       raise Error, "invalid execution-plan JSON: #{e.message}"
@@ -184,27 +205,38 @@ module WorkloadOrchestrator
       ).freeze
     end
 
+    # Return normalized pool requirements or nil from a versioned wire object.
+    # Unknown fields, invalid digests and capability values raise Error.
     def parse_requirements(value, index)
       data = mapping!(value, "pools[#{index}].requirements")
       validate_optional_keys!(data, REQUIREMENT_KEYS, "pools[#{index}].requirements")
       return nil unless data.key?("ollama")
 
       ollama = mapping!(data.fetch("ollama"), "pools[#{index}].requirements.ollama")
+      capability_keys = contract_version == MINIMUM_CONTEXT_CONTRACT_VERSION ?
+                          MINIMUM_CONTEXT_CAPABILITY_KEYS : OLLAMA_CAPABILITY_KEYS
       validate_keys!(ollama, OLLAMA_KEYS, "pools[#{index}].requirements.ollama",
-                     optional: logical? ? OLLAMA_CAPABILITY_KEYS : [])
+                     optional: logical? ? capability_keys : [])
       validate_ollama_capabilities!(ollama)
       digest = ollama.fetch("expected_digest").to_s.downcase
       raise Error, "expected_digest must be an exact 64-hex digest" unless digest.match?(DIGEST_PATTERN)
 
       { "model" => non_empty_string!(ollama.fetch("model"), "ollama model"), "expected_digest" => digest }
-        .merge(ollama.slice(*OLLAMA_CAPABILITY_KEYS)).freeze
+        .merge(ollama.slice(*capability_keys)).freeze
     end
 
+    # Validate parsed context/GPU fields; returns nil or raises Error on invalid
+    # values or mutually exclusive exact/minimum declarations.
     def validate_ollama_capabilities!(ollama)
-      if ollama.key?("required_context_length")
-        context = ollama["required_context_length"]
+      if ollama.key?("required_context_length") && ollama.key?("minimum_context_length")
+        raise Error, "required_context_length and minimum_context_length are mutually exclusive"
+      end
+      %w[required_context_length minimum_context_length].each do |field|
+        next unless ollama.key?(field)
+
+        context = ollama[field]
         unless context.is_a?(Integer) && context.positive?
-          raise Error, "required_context_length must be a positive integer"
+          raise Error, "#{field} must be a positive integer"
         end
       end
       if ollama.key?("require_fully_gpu_resident") && ollama["require_fully_gpu_resident"] != true

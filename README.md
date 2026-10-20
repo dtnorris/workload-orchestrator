@@ -6,6 +6,7 @@ resumable execution of declarative command workloads across configured workers.
 ## Component-owned contracts
 
 WLO owns the [v0.3 plan](contracts/wlo-execution-plan/v0.3/README.md),
+[v0.4 explicit minimum-context opt-in](contracts/wlo-execution-plan/v0.4/README.md),
 [registry API](contracts/dynamic-worker-registry/v0.1/README.md),
 [capability request](contracts/ollama-capability-request/v0.1/README.md),
 [action check](contracts/wlo-execution-action-check/v0.1/README.md) and

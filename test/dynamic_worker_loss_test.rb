@@ -502,7 +502,143 @@ class DynamicWorkerLossTest < Minitest::Test
     assert_equal 1, @store.consumer_demand(pool_id: "local-pool", now: NOW).fetch("bound_count")
   end
 
+  # Accepted readiness-only changes preserve a v0.4 attempt. A still-eligible
+  # larger context ends it in doubt, and explicit retry retains its exact bytes.
+  def test_minimum_context_change_requires_retry_and_keeps_original_capacity
+    prepare_minimum_plan
+    changed = worker_at_context(262_144)
+    poller = poller_for(
+      snapshot(revision: 7, workers: [@worker_a]),
+      snapshot(revision: 8, published_at: "2030-01-01T00:00:10Z", workers: [@worker_a.merge("state" => "NOT_READY")]),
+      snapshot(revision: 9, published_at: "2030-01-01T00:00:20Z", workers: [changed])
+    )
+    poller.poll_once
+    original = start_attempt(poller.current_workers.first)
+    poller.poll_once
+    assert_empty reconciler_for.reconcile!(poller)
+    assert_equal "running", metadata_for.fetch("status")
+    poller.poll_once
+    assert_equal "worker_capability_changed", reconciler_for.reconcile!(poller).first.fetch("reason")
+    retained_bytes = File.binread(File.join(@output, "runs/job-1/metadata.json"))
+    assert_equal 131_072, metadata_for.dig("worker_snapshot", "capabilities", "ollama", "models", 0, "context_length")
+    scheduler = WorkloadOrchestrator::DynamicScheduler.new(plan: @plan, store: @store)
+    assert_empty scheduler.assignments(workers: poller.ready_workers, current_workers: poller.current_workers)
+    assert_raises(WorkloadOrchestrator::Error) { start_attempt(poller.current_workers.first) }
+    @store.retry_failed!(reason: "synthetic operator reviewed loss", all: true)
+    @store.clear_pause!
+    assignment = scheduler.assignments(workers: poller.ready_workers, current_workers: poller.current_workers).first
+    refute_nil assignment
+    retry_attempt = start_attempt(assignment.worker)
+    archive_path = File.join(@output, "attempts/job-1/attempt-1/metadata.json")
+    assert_equal retained_bytes, File.binread(archive_path)
+    assert_equal 2, retry_attempt.attempt_id
+    assert_equal 262_144, metadata_for.dig("worker_snapshot", "capabilities", "ollama", "models", 0, "context_length")
+    assert_equal 131_072, @plan.pools.first.ollama_requirement.fetch("minimum_context_length")
+    refute_equal original.worker_binding.tuple, retry_attempt.worker_binding.tuple
+    assert_equal @plan.bytes, File.binread(File.join(@output, "plan.json"))
+  end
+
+  # Restart from an accepted context change and recovery before reconciliation.
+  # Restoring the original identity cannot erase loss history or permit resume.
+  def test_minimum_resume_cannot_erase_historical_context_loss
+    prepare_minimum_plan
+    checkpoint = File.join(@output, "dynamic-workers/checkpoint.json")
+    poller = poller_for(
+      snapshot(revision: 7, workers: [@worker_a]),
+      snapshot(revision: 8, published_at: "2030-01-01T00:00:20Z", workers: [worker_at_context(262_144)]),
+      snapshot(revision: 9, published_at: "2030-01-01T00:00:40Z", workers: [@worker_a]),
+      checkpoint: checkpoint
+    )
+    poller.poll_once
+    start_attempt(poller.current_workers.first)
+    original_snapshot = metadata_for.fetch("worker_snapshot")
+    poller.poll_once
+    poller.poll_once
+    resumed = poller_for(snapshot(revision: 10, published_at: "2030-01-01T00:00:50Z", workers: [@worker_a]),
+                         checkpoint: checkpoint)
+    assert_equal "worker_capability_changed", reconciler_for.reconcile!(resumed).first.fetch("reason")
+    assert_equal 8, metadata_for.dig("evidence", "reconciliation_event", "revision")
+    assert_equal original_snapshot, metadata_for.fetch("worker_snapshot")
+    runner = WorkloadOrchestrator::Runner.new(
+      plan: WorkloadOrchestrator::Plan.load(File.join(@output, "plan.json")),
+      workers: WorkloadOrchestrator::WorkerSet.new({}), workdir: @workdir, output_dir: @output,
+      worker_source: SequenceSource.new(snapshot(revision: 10, workers: [@worker_a])),
+      command_executor: ->(*) { raise "resume silently dispatched" }, out: StringIO.new,
+      worker_registry_clock: -> { NOW }
+    )
+    error = assert_raises(WorkloadOrchestrator::Error) { runner.run(resume: true) }
+    assert_includes error.message, "explicitly retry"
+    assert_equal "failed", metadata_for.fetch("status")
+    assert_equal original_snapshot, metadata_for.fetch("worker_snapshot")
+  end
+
+  # The new minimum contract retains generic generation, endpoint, disappearance
+  # and expiry protection. Accepted replacements never silently rebind attempts.
+  def test_minimum_keeps_all_material_loss_and_expiry_guards
+    replacements = {
+      "worker_generation_replaced" => @worker_a.merge("generation_id" => "new-generation"),
+      "worker_endpoint_changed" => @worker_a.merge("endpoint" => "http://127.0.0.1:11442"),
+      "worker_disappeared" => nil
+    }
+    replacements.each do |reason, replacement|
+      prepare_minimum_plan(output_name: reason)
+      poller = poller_for(
+        snapshot(revision: 7, workers: [@worker_a]),
+        snapshot(revision: 8, published_at: "2030-01-01T00:00:20Z", workers: [replacement].compact),
+        checkpoint: File.join(@output, "checkpoint.json")
+      )
+      poller.poll_once
+      start_attempt(poller.current_workers.first)
+      poller.poll_once
+      original = metadata_for.fetch("worker_snapshot")
+      assert_equal reason, reconciler_for.reconcile!(poller).first.fetch("reason")
+      assert_equal original, metadata_for.fetch("worker_snapshot")
+      assert @store.dispatch_halted?
+    end
+    prepare_minimum_plan(output_name: "expiry")
+    current_time = NOW
+    poller = WorkloadOrchestrator::WorkerRegistryPoller.new(
+      source: SequenceSource.new(snapshot(revision: 7, workers: [@worker_a])),
+      checkpoint_path: File.join(@output, "checkpoint.json"), clock: -> { current_time }
+    )
+    poller.poll_once
+    start_attempt(poller.current_workers.first)
+    original = metadata_for.fetch("worker_snapshot")
+    current_time = NOW + 241
+    error = assert_raises(WorkloadOrchestrator::Error) { poller.poll_once }
+    assert_includes error.message, "expired"
+    assert_equal "worker_source_expired", reconciler_for.reconcile!(poller).first.fetch("reason")
+    assert_equal original, metadata_for.fetch("worker_snapshot")
+    assert_empty poller.ready_workers
+    assert @store.dispatch_halted?
+  end
+
   private
+
+  # Prepare a fresh v0.4 minimum workload/store, leaving the legacy setup intact.
+  # Returns the store; malformed synthetic plan data raises the public Error.
+  def prepare_minimum_plan(output_name: "minimum-output")
+    document = JSON.parse(@plan.bytes)
+    document["contract_version"] = "wlo-execution-plan/v0.4"
+    document["pools"] = [{ "pool_id" => "local-pool", "requirements" => { "ollama" => {
+      "model" => "qualified-model:latest", "expected_digest" => "a" * 64,
+      "minimum_context_length" => 131_072, "require_fully_gpu_resident" => true
+    } } }]
+    @plan = WorkloadOrchestrator::Plan.new(JSON.generate(document))
+    @output = File.join(@tmp, output_name)
+    @store = WorkloadOrchestrator::ExecutionStore.new(output_dir: @output, plan: @plan, workdir: @workdir)
+    @store.prepare!
+  end
+
+  # Return a new truthful synthetic observation at context, with its fingerprint.
+  # Does not mutate the source record or call a runtime; invalid data is tested
+  # later by the owning registry reader.
+  def worker_at_context(context)
+    changed = deep_copy(@worker_a)
+    changed.dig("capabilities", "ollama", "models", 0)["context_length"] = context
+    changed["capability_fingerprint"] = capability_fingerprint(changed)
+    changed
+  end
 
   def running_attempt_then(next_snapshot)
     poller = poller_for(snapshot(revision: 7, workers: [@worker_a]), next_snapshot)
