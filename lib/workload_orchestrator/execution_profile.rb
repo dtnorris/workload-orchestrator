@@ -73,7 +73,7 @@ module WorkloadOrchestrator
     def bind(plan)
       if plan.priority_scheduling?
         raise Error,
-              "wlo-execution-plan/v0.3 uses the provider-neutral dynamic worker registry; " \
+              "#{plan.contract_version} uses the provider-neutral dynamic worker registry; " \
               "execution profiles are legacy v0.2 compatibility only"
       end
       unless plan.contract_version == Plan::LOGICAL_CONTRACT_VERSION && !plan.execution_profile

@@ -49,7 +49,7 @@ module WorkloadOrchestrator
       raise Error, "pause scope requires resume" if !resume && (release_pause || preserve_pauses)
       raise Error, "choose one pause continuation scope" if release_pause && preserve_pauses
       if plan.priority_scheduling? && !dynamic_workers?
-        raise Error, "wlo-execution-plan/v0.3 work-conserving execution requires a dynamic worker source"
+        raise Error, "#{plan.contract_version} work-conserving execution requires a dynamic worker source"
       end
 
       validate_workdir!

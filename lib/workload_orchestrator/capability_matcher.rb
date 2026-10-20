@@ -91,16 +91,24 @@ module WorkloadOrchestrator
       raise Error, "capability matching requires a RegistryWorker"
     end
 
+    # Return string-keyed requirements from an ingested pool or public matcher
+    # input. Raises Error for unknown fields or invalid/conflicting minimums.
     def normalize_requirement!(requirement)
       raise Error, "ollama capability requirement must be an object" unless requirement.is_a?(Hash)
 
       normalized = requirement.transform_keys(&:to_s)
       required = Plan::OLLAMA_KEYS
-      allowed = required + Plan::OLLAMA_CAPABILITY_KEYS
+      allowed = required + Plan::MINIMUM_CONTEXT_CAPABILITY_KEYS
       missing = required - normalized.keys
       unknown = normalized.keys - allowed
       raise Error, "ollama capability requirement is missing field(s): #{missing.join(', ')}" unless missing.empty?
       raise Error, "ollama capability requirement has unknown field(s): #{unknown.join(', ')}" unless unknown.empty?
+      if normalized.key?("minimum_context_length")
+        minimum = normalized["minimum_context_length"]
+        unless minimum.is_a?(Integer) && minimum.positive? && !normalized.key?("required_context_length")
+          raise Error, "minimum_context_length must be a positive integer without required_context_length"
+        end
+      end
 
       normalized
     end
@@ -132,6 +140,8 @@ module WorkloadOrchestrator
       ["gpu_id_mismatch"]
     end
 
+    # Append mismatch reasons comparing an observed model with validated intent.
+    # Returns reasons, retaining equality for exact requirements; no external IO.
     def compare_model_capability(model, requirement, reasons)
       compare_field(model, "digest", requirement.fetch("expected_digest"), "digest_mismatch", reasons)
       if requirement.key?("required_context_length")
@@ -143,6 +153,8 @@ module WorkloadOrchestrator
           reasons
         )
       end
+      compare_minimum_context(model, requirement.fetch("minimum_context_length"), reasons) if
+        requirement.key?("minimum_context_length")
       if requirement["require_fully_gpu_resident"]
         if !model.key?("fully_gpu_resident")
           reasons << "missing_capability"
@@ -159,6 +171,17 @@ module WorkloadOrchestrator
       elsif record[field] != required_value
         reasons << mismatch_reason
       end
+    end
+
+    # Compare a validated workload minimum with an observed model record. Appends
+    # a missing/mismatch reason and returns reasons; no external calls or errors.
+    def compare_minimum_context(model, minimum, reasons)
+      if !model.key?("context_length")
+        reasons << "missing_capability"
+      elsif !model["context_length"].is_a?(Integer) || model["context_length"] < minimum
+        reasons << "context_length_mismatch"
+      end
+      reasons
     end
   end
 end

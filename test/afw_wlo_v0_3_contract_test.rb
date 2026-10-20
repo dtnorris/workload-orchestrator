@@ -60,7 +60,15 @@ class AfwWloV03ContractTest < Minitest::Test
       "invalid/unknown-field.json" => "unknown field"
     }
     expected_messages.each do |relative_path, expected_message|
-      error = assert_raises(WorkloadOrchestrator::Error, relative_path) { load_fixture(relative_path) }
+      bytes = File.binread(File.join(FIXTURE_ROOT, relative_path))
+      if relative_path == "invalid/bad-version.json"
+        # Frozen corpus is v0.3-specific; v0.4 now has its own public contract.
+        document = JSON.parse(bytes)
+        refute_equal WorkloadOrchestrator::Plan::PRIORITY_CONTRACT_VERSION, document.fetch("contract_version")
+        assert_equal "wlo-execution-plan/v0.4", WorkloadOrchestrator::Plan.new(bytes).contract_version
+        bytes = JSON.generate(document.merge("contract_version" => "wlo-execution-plan/v9"))
+      end
+      error = assert_raises(WorkloadOrchestrator::Error, relative_path) { WorkloadOrchestrator::Plan.new(bytes) }
       assert_includes error.message, expected_message, relative_path
     end
   end

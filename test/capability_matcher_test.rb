@@ -152,6 +152,24 @@ class CapabilityMatcherTest < Minitest::Test
     )
   end
 
+  # Sparse observed records cannot establish minimum eligibility. Inputs remain
+  # fixture RegistryWorkers; missing capabilities produce explicit reasons.
+  def test_minimum_still_requires_observed_context_and_required_gpu_identity
+    minimum = REQUIREMENT.except("required_context_length").merge("minimum_context_length" => 131_072)
+    missing_context = model_capability.except("context_length")
+    assert_equal ["missing_capability"], match(models: [missing_context], requirement: minimum).reasons
+    assert_equal ["context_length_mismatch"], match(models: [model_capability("context_length" => "262144")],
+                                                  requirement: minimum).reasons
+    assert_equal ["missing_capability"], match(worker: registry_worker(gpu_id: nil), requirement: minimum).reasons
+    assert_equal ["missing_capability"], match(models: [], requirement: minimum).reasons
+    [0, "131072", nil].each do |context|
+      assert_raises(WorkloadOrchestrator::Error) { match(requirement: minimum.merge("minimum_context_length" => context)) }
+    end
+    assert_raises(WorkloadOrchestrator::Error) do
+      match(requirement: minimum.merge("required_context_length" => 131_072))
+    end
+  end
+
   private
 
   def match(worker: nil, models: nil, labels: %w[inference remote], requirement: REQUIREMENT)

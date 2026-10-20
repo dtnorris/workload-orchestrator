@@ -54,6 +54,7 @@ module WorkloadOrchestrator
       fields << "ollama=#{requirement.fetch('model')}"
       fields << "digest=#{requirement.fetch('expected_digest')}"
       fields << "context=#{requirement['required_context_length']}" if requirement["required_context_length"]
+      fields << "minimum_context=#{requirement['minimum_context_length']}" if requirement["minimum_context_length"]
       if requirement.key?("require_fully_gpu_resident")
         fields << "fully_gpu_resident=#{requirement.fetch('require_fully_gpu_resident')}"
       end
