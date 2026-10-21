@@ -61,6 +61,16 @@ module WorkloadOrchestrator
       end
     end
 
+    # Validate an already retained identity without preparation, locks or writes.
+    # Returns the state hash; invalid shape, plan/profile bytes or import binding
+    # raises Error. The caller supplies the original plan/workdir/worker binding.
+    def validate_retained_identity!
+      state = read_execution
+      validate_action_state!(state)
+      validate_existing!
+      state
+    end
+
     def start!
       update_execution do |state|
         state["started_at"] ||= timestamp

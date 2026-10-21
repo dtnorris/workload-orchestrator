@@ -499,15 +499,37 @@ module WorkloadOrchestrator
     # Request either a manual pause or an independent token-bound hold. Invalid
     # ownership or execution evidence raises Error; success returns CLI code 0.
     def pause_command
-      output = nil
-      token = nil
+      options = {}
       OptionParser.new do |opts|
-        opts.on("--output DIR") { |value| output = value }
-        opts.on("--owner-token TOKEN") { |value| token = value }
+        { output: "DIR", execution: "ID", output_root: "DIR", owner_token: "TOKEN" }.each do |key, argument|
+          flag = "--#{key.to_s.tr('_', '-')}"
+          opts.on("#{flag} #{argument}") do |value|
+            raise Error, "duplicate #{flag}" if options.key?(key)
+
+            options[key] = value
+          end
+        end
       end.parse!(@argv)
       reject_extra_arguments!
+      if options.key?(:execution)
+        raise Error, "choose --execution or --output" if options.key?(:output)
+
+        root = options.fetch(:output_root) { File.join(@root, "output") }
+        return PauseTarget.new(root).with_output(options.fetch(:execution)) do |output|
+          request_pause(output, options[:owner_token])
+        end
+      end
+      raise Error, "--output-root requires --execution" if options.key?(:output_root)
+
+      output = options[:output]
       raise OptionParser::MissingArgument, "--output DIR" if output.to_s.empty?
 
+      request_pause(output, options[:owner_token])
+    end
+
+    # Publish the existing manual or owned control to the selected output.
+    # Returns CLI code 0; invalid retained ownership propagates Error.
+    def request_pause(output, token)
       if token
         identifier = PauseRequests.new(output).request!(token)
         @out.puts "Pause request ID: #{identifier}"
@@ -695,7 +717,10 @@ module WorkloadOrchestrator
           bin/wlo watch PLAN.json --output DIR [--interval SECONDS] [--verbose] [--width COLUMNS]
           bin/wlo doctor PLAN.json JOB --output DIR [--json]
           bin/wlo logs PLAN.json JOB --output DIR [--lines N] [--json]
-          bin/wlo pause --output DIR
+          bin/wlo pause (--execution ID [--output-root DIR] | --output DIR) [--owner-token TOKEN]
+            ID is the full 64-hex pause_control.consumer_id from status --json, not a plan ID.
+            Searches immediate executions in this WLO checkout's output/ regardless of current directory.
+            --output-root selects one existing root; abbreviations and symlink paths are unsupported.
           bin/wlo source-adopt --output DIR --source NAME
           bin/wlo source-offer --output DIR --source NAME --duration SECONDS [--renew]
           bin/wlo source-drain --output DIR --source NAME

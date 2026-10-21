@@ -225,6 +225,32 @@ changes provider capacity.
 
 ## Pause, resume and retry
 
+For an execution directly under this WLO checkout's `output/`, read its full
+`pause_control.consumer_id` from the existing JSON status, then reuse that ID:
+
+```bash
+bin/wlo status "$PLAN" --output "$OUTPUT" --json
+bin/wlo pause --execution "$ID"
+```
+
+The 64-character consumer ID identifies one execution, including its frozen
+plan hash, workdir and output path. A plan ID alone may name multiple executions
+and is not accepted here. Directory names, abbreviations such as `39b` and ID
+prefixes are not aliases. No alias registry is created.
+
+The default lookup root is `output/` beside the invoked WLO installation's
+`bin/` and `lib/`, independent of current directory. From another directory,
+invoke that same checkout's `bin/wlo` by path. To select a different existing
+root explicitly, add `--output-root /canonical/path/to/outputs`; a relative
+override is relative to the current directory. WLO inspects immediate execution
+directories only, never ancestor, sibling, home or production directories, and
+never falls back to another root. This does not discover a production root
+automatically. Incomplete/corrupt children or symlinks refuse discovery; use
+the explicit path for unusual layouts. See [pause discovery and ownership](pause-ownership.md)
+for the complete safety boundary.
+
+The existing explicit-output invocation remains supported:
+
 ```bash
 bin/wlo pause --output "$OUTPUT"
 bin/wlo summary "$PLAN" --output "$OUTPUT"

@@ -168,7 +168,21 @@ review is recorded.
 
 ## Pause and resume
 
-Request a graceful pause:
+From this WLO checkout, pause a retained execution under its `output/` using the
+full `pause_control.consumer_id` reported by `status --json`:
+
+```bash
+bin/wlo pause --execution "$ID"
+```
+
+This existing 64-character execution identity binds the frozen plan, workdir
+and output path; it is distinct from a plan ID or an owner token. Abbreviations
+are unsupported. Lookup uses this checkout's `output/` regardless of current
+directory. Use `--output-root DIR` for another explicitly chosen existing root
+of immediate execution directories. See [pause discovery and ownership](docs/pause-ownership.md)
+for validation, filesystem safety and root rules.
+
+For unusual layouts, request a graceful pause with the existing explicit path:
 
 ```bash
 bin/wlo pause --output output/hello-local

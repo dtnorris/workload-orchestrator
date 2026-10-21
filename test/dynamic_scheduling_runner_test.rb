@@ -292,6 +292,8 @@ class DynamicSchedulingRunnerTest < Minitest::Test
     assert_equal 2, JSON.parse(File.read(File.join(@output, "dynamic-workers/checkpoint.json"))).fetch("revision")
   end
 
+  # Hold the first attempt until the real condition wait begins, so this tests
+  # completion during idle sleep rather than activity queued before sleep.
   def test_attempt_completion_wakes_default_poll_sleep_before_the_interval
     plan = build_plan(
       pools: [pool("model")],
@@ -301,14 +303,25 @@ class DynamicSchedulingRunnerTest < Minitest::Test
                                   revision: 1,
                                   workers: [worker_record("worker", "model")]
                                 ))
+    waiting = Queue.new
     calls = []
     executor = lambda do |_environment, *argv, **_options|
       calls << argv.last
+      raise "runner did not enter idle wait" if calls.length == 1 && !waiting.pop(timeout: 2.0)
+
       command_result
     end
     runner = build_runner(
       plan, source, executor: executor, sleeper: nil, poll_interval: 2.0
     )
+    condition = runner.instance_variable_get(:@dynamic_wait_condition)
+    original_wait = condition.method(:wait)
+    # Notify while the runner holds its wait mutex; completion must acquire
+    # that same mutex, so its activity can only arrive after wait releases it.
+    condition.define_singleton_method(:wait) do |mutex, seconds|
+      waiting << true
+      original_wait.call(mutex, seconds)
+    end
     started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
     assert_equal "completed", runner.run
