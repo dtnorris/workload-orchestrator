@@ -26,9 +26,11 @@ module WorkloadOrchestrator
       source-status  ONE-SHOT INSPECTION. Reports source consent, acknowledgment and health.
       action-check  READ-ONLY INSPECTION. Checks execution action admissibility; changes no state.
       recovery      ONE-SHOT INSPECTION. Reads the bounded recovery history only.
+      acknowledge-worker-loss,
       retry-failed,
       repair,
       import-terminal CONTROL REQUEST. Changes retained WLO execution evidence/state only;
+                      acknowledge-worker-loss releases only an exactly reviewed loss halt;
                       retry-failed authorizes reviewed failed/interrupted attempts; repair
                       currently fails closed; none starts execution or changes provider capacity.
       validate, plan,
@@ -74,6 +76,7 @@ module WorkloadOrchestrator
       when "start" then run_command(resume: false, detached: true)
       when "run" then run_command(resume: false)
       when "resume" then run_command(resume: true)
+      when "acknowledge-worker-loss" then acknowledge_worker_loss_command
       when "retry-failed" then retry_failed_command
       when "recovery" then recovery_command
       when "repair" then repair_command
@@ -347,6 +350,37 @@ module WorkloadOrchestrator
         @out.puts result.fetch("message") if result.key?("message")
       end
       0
+    end
+
+    # Release exactly one reviewed worker-loss halt without authorizing a retry.
+    # Requires exact review bytes and their operator-selected digest; emits audit JSON.
+    def acknowledge_worker_loss_command
+      plan_path = required_argument!("PLAN.json")
+      review_path = required_argument!("REVIEW.json")
+      options = parse_worker_loss_acknowledgement_options
+      result = recovery_store(load_bound_plan(plan_path, options), options).acknowledge_worker_loss!(
+        bytes: File.binread(review_path), sha256: options.fetch(:review_sha256), dry_run: options.fetch(:dry_run)
+      )
+      print_recovery_json(result)
+    rescue SystemCallError => e
+      raise Error, e.message
+    end
+
+    # Parse the deliberately narrow control action; no worker source is polled.
+    # Missing fields or extra arguments raise the standard option error.
+    def parse_worker_loss_acknowledgement_options
+      options = { dry_run: false }
+      OptionParser.new do |parser|
+        parser.on("--workdir DIR") { |value| options[:workdir] = value }
+        parser.on("--output DIR") { |value| options[:output] = value }
+        parser.on("--review-sha256 SHA256") { |value| options[:review_sha256] = value }
+        parser.on("--dry-run") { options[:dry_run] = true }
+      end.parse!(@argv)
+      reject_extra_arguments!
+      %i[workdir output review_sha256].each do |key|
+        raise OptionParser::MissingArgument, "--#{key.to_s.tr('_', '-')}" if options[key].to_s.empty?
+      end
+      options
     end
 
     def retry_failed_command
@@ -729,6 +763,7 @@ module WorkloadOrchestrator
                          [--execution-profile FILE]
                          [--worker-sources-config FILE]
                          [--worker-source-command FILE [--worker-source-arg ARG ...]]
+          bin/wlo acknowledge-worker-loss PLAN.json REVIEW.json --workdir DIR --output DIR --review-sha256 SHA256 [--dry-run]
           bin/wlo retry-failed PLAN.json --workdir DIR --output DIR (--all | --job ID ...) --reason TEXT
                                [--acknowledge-circuit-breaker] [--dry-run] [--json]
           bin/wlo action-check PLAN.json --workdir DIR --output DIR --action ACTION [--json]

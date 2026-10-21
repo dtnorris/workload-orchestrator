@@ -84,3 +84,58 @@ one compatibility graph and occupancy map for every logical pool in the single
 execution. Occupancy is released only after the persisted reconciler
 transition. A replacement generation can then be considered for future work,
 but it can never make the prior attempt successful or automatically retry it.
+
+## Reviewed acknowledgement without retry
+
+`acknowledge-worker-loss PLAN.json REVIEW.json --workdir DIR --output DIR
+--review-sha256 SHA256 [--dry-run]` acknowledges one stopped dynamic-worker-loss
+halt and its currently tripped breaker. It never starts work, changes a failed
+attempt to pending/complete, imports a result, clears pauses, or authorizes retry.
+The original pending jobs remain eligible only for a later explicit resume.
+
+The finite `wlo-worker-loss-review/v0.1` object names
+`action: acknowledge_loss_without_retry`, nonblank `operator` and `reason`, the
+exact plan ID/hash/workdir, stopped `execution_sha256` and `jobs_sha256`, the
+existing WLO tree digest `workdir_evidence_sha256` of the whole stopped workdir (the review itself must live outside that tree), the
+halt's `job_id` and `attempt`, an `attempts` mapping of every existing job to its
+metadata hash, and `preserved_files` / `preserved_directories` mappings of
+workdir-relative evidence to exact hashes / sorted directory entries. Every
+attempt must be included in preserved files. Review paths reject traversal and
+symlinks. The exact bytes are limited to 1 MiB and must match the independently
+reviewed digest passed on the command line. Duplicate JSON fields are rejected.
+
+Under the existing execution-owner and state locks, WLO checks that no attempt
+is running/interrupted or queued for retry, that the review covers all existing
+attempts, and that exactly the named native bound loss explains the current
+halt. One atomic, fsynced execution-state replacement retains the exact review
+bytes, parsed review, review hash, timestamp and prior halt/breaker under
+`worker_loss_acknowledgements`, removes only that halt, resets the breaker to a
+new generation, and marks execution pending. Jobs, requests, plan, attempts,
+logs, receipts, prior breaker history and late evidence are untouched. The
+control action's JSON output and `execution.json` are the acknowledgement audit;
+the existing `recovery` command continues to report retry history separately.
+
+Preparation/action-check revalidate the pinned evidence. Halt restoration skips
+only that byte-identical acknowledged attempt. A changed review/evidence, another
+loss, new failed attempt or new tripped breaker gains no clearance from the old
+action. Repeating identical authorization is idempotent and never clears a later
+halt/breaker. Future explicitly retried acknowledged jobs would change pinned
+metadata and are intentionally outside this acknowledgement contract.
+
+## Source observation journal
+
+Before accepting a validated registry candidate, each poller durably retains its
+exact stdout, the command source's exact binary stderr, and a correlation receipt
+under its checkpoint directory's private `observations/` directory. The receipt
+includes registry ID, revision, snapshot and stream hashes, worker count, time and
+`phase: validated_before_checkpoint`. That phase never claims the later checkpoint
+write succeeded. Use the matching checkpoint/reconciliation evidence to establish
+acceptance. Journal files/directories are exclusively created, fsynced and renamed;
+IO/durability failure refuses acceptance and follows existing failed-poll/expiry
+rules. No old journal publication is replayed. Successful empty publications keep
+publisher diagnostics across later READY snapshots. Sources with no diagnostic
+channel retain an empty stderr; WLO does not invent a rejecting predicate.
+
+Registry schema, identity, monotonic revision, freshness, worker matching,
+capability validation, loss reconciliation, source authority and breaker policy
+are unchanged. The journal has no automatic rotation; preserve it as evidence.

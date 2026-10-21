@@ -8,9 +8,13 @@ require_relative "execution_retry"
 require_relative "execution_action_check"
 require_relative "consumer_demand"
 require_relative "terminal_import_state"
+require_relative "worker_loss_acknowledgement"
+require_relative "worker_loss_state_validation"
 
 module WorkloadOrchestrator
   class ExecutionStore
+    include WorkerLossStateValidation
+    include WorkerLossAcknowledgement
     include ExecutionRetry
     include ExecutionActionCheck
     include ConsumerDemand
@@ -364,6 +368,7 @@ module WorkloadOrchestrator
          (!File.file?(profile_path) || File.binread(profile_path) != plan.execution_profile.bytes)
         raise Error, "frozen execution profile is missing or changed in existing output"
       end
+      validate_worker_loss_acknowledgements!(state)
       marker = state["terminal_import"]
       if marker
         raise Error, "terminal import is incomplete; repeat the same import" if marker["phase"] != "complete" && !allow_incomplete_import

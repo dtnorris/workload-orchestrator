@@ -38,7 +38,7 @@ module WorkloadOrchestrator
   # The command is discovery-only: stdout is passed through unchanged for the
   # registry parser, and no provider or workload semantics are interpreted.
   class CommandWorkerSource < WorkerSource
-    attr_reader :argv, :environment, :workdir
+    attr_reader :argv, :environment, :workdir, :last_stderr
 
     def initialize(command, args = [], environment: {}, workdir: Dir.pwd,
                    command_executor: OwnedCommandRunner.new)
@@ -63,7 +63,9 @@ module WorkloadOrchestrator
     end
 
     def latest_snapshot
+      @last_stderr = nil
       stdout, stderr, status = @command_executor.call(environment, *argv, chdir: workdir)
+      @last_stderr = stderr.b.dup.freeze
       return stdout if status.success?
 
       detail = stderr.strip

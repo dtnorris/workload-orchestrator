@@ -3,6 +3,7 @@
 require "fileutils"
 require "json"
 require "time"
+require_relative "source_observation"
 
 module WorkloadOrchestrator
   # Polls one provider-neutral WorkerSource, durably remembers the greatest
@@ -68,6 +69,7 @@ module WorkloadOrchestrator
       validate_checkpoint_transition!(candidate) unless registry
       reconciliation = reconcile(previous_workers, candidate.entries)
       checkpoint = checkpoint_for(candidate, reconciliation, now)
+      retain_source_observation!(candidate, attempted_at)
       write_checkpoint(checkpoint)
 
       @registry = candidate
@@ -136,6 +138,13 @@ module WorkloadOrchestrator
     end
 
     private
+
+    # Retain exact validated source channels before checkpoint acceptance.
+    # Diagnostic IO errors raise Error; registry/loss semantics are unchanged.
+    def retain_source_observation!(candidate, attempted_at)
+      stderr = @source.respond_to?(:last_stderr) ? @source.last_stderr.to_s.b : "".b
+      SourceObservation.retain!(checkpoint_path: @checkpoint_path, registry: candidate, stderr:, attempted_at:)
+    end
 
     def current_time
       value = @clock.call

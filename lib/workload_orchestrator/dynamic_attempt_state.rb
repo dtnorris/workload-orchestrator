@@ -278,6 +278,7 @@ module WorkloadOrchestrator
         next unless document.fetch("status") == "failed"
         next unless document.dig("evidence", "kind") == "dynamic_worker_loss_in_doubt"
         next if retry_pending[job.id] == document.fetch("attempt")
+        next if acknowledged_worker_loss?(state, job, document)
 
         return [job, document]
       end
