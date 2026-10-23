@@ -107,7 +107,13 @@ reviewed digest passed on the command line. Duplicate JSON fields are rejected.
 Under the existing execution-owner and state locks, WLO checks that no attempt
 is running/interrupted or queued for retry, that the review covers all existing
 attempts, and that exactly the named native bound loss explains the current
-halt. One atomic, fsynced execution-state replacement retains the exact review
+halt after excluding only earlier losses with independently valid retained
+acknowledgements. Every earlier acknowledgement is revalidated from its raw
+review bytes/digest, parsed copy, plan/workdir/output binding and preserved
+files/directories; the exemption requires the exact job, attempt and current
+metadata hash. A matching metadata hash alone is insufficient. Missing, changed
+or wrong-identity history leaves that loss unreviewed and blocks the action.
+One atomic, fsynced execution-state replacement retains the exact review
 bytes, parsed review, review hash, timestamp and prior halt/breaker under
 `worker_loss_acknowledgements`, removes only that halt, resets the breaker to a
 new generation, and marks execution pending. Jobs, requests, plan, attempts,
@@ -121,6 +127,23 @@ loss, new failed attempt or new tripped breaker gains no clearance from the old
 action. Repeating identical authorization is idempotent and never clears a later
 halt/breaker. Future explicitly retried acknowledged jobs would change pinned
 metadata and are intentionally outside this acknowledgement contract.
+
+For sequential losses in one execution, retain each acknowledgement and its
+reviewed evidence. Prepare a new review for the currently halted job only after
+its late evidence is stable, preview with `--dry-run`, and apply with the same
+independently reviewed bytes/digest. B's review must still cover all existing
+attempts, including A. Review each current halt separately; acknowledgement of A
+cannot clear B's halt or breaker. Once B is acknowledged, use a separate explicit
+resume only after the ordinary identity, capacity, pause and recovery gates are
+satisfied. Failed/in-doubt attempts remain failed, and original pending work is
+the only newly eligible work. This grants no late-result adoption or retry.
+
+The offline sequential-loss process proof is
+`bundle exec ruby test/acceptance/fo_wlo_05.rb`. Run it separately from the
+ordinary suite after required host checkpoint registration. It uses disposable
+synthetic jobs, fresh processes and native public controls, and retains its
+binary logs/evidence under the printed temporary root. It never accesses an
+original execution or contacts an inference endpoint.
 
 ## Source observation journal
 
