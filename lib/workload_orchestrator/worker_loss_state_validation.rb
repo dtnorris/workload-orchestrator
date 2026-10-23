@@ -26,7 +26,7 @@ module WorkloadOrchestrator
         raise Error, "review does not name the current worker-loss halt and breaker"
       end
 
-      validate_reviewed_loss!(review, halt)
+      validate_reviewed_loss!(review, halt, state)
     end
 
     # Bind all retained attempts, including domain failures, to the review.
@@ -44,11 +44,14 @@ module WorkloadOrchestrator
       raise Error, "worker-loss review attempt set changed" unless actual == review["attempts"]
     end
 
-    # Validate native worker binding and loss evidence for exactly the named
-    # failed attempt. Any additional loss or inconsistent identity raises Error.
-    def validate_reviewed_loss!(review, halt)
+    # Validate the named native loss after retained acknowledgement history has
+    # been revalidated under both locks by validate_retained_identity!. Only
+    # exact acknowledged attempts are exempt; other losses/identities raise Error.
+    def validate_reviewed_loss!(review, halt, state)
       losses = plan.jobs.filter_map do |job|
         document = raw_metadata_for(job)
+        next if document && acknowledged_worker_loss?(state, job, document)
+
         [job, document] if document&.dig("evidence", "kind") == "dynamic_worker_loss_in_doubt"
       end
       unless losses.length == 1 && losses.first.first.id == review["job_id"]
