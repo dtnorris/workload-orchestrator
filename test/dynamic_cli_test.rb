@@ -73,13 +73,15 @@ class DynamicCliTest < Minitest::Test
       assert_equal 0, code, error
       pid = Integer(out.match(/PID (\d+)/)[1])
       @manager_pids << pid
-      health_path = File.join(output, "dynamic-workers", "health.json")
+      status_code = status_error = document = health = nil
+      # Assert one public snapshot of a completed failed poll. The manager may
+      # begin another poll between reading health.json and invoking status.
       wait_until do
-        File.file?(health_path) && JSON.parse(File.read(health_path)).fetch("last_poll_result") == "failure"
+        status_code, status_out, status_error = run_cli("status", @plan, "--output", output, "--json")
+        document = JSON.parse(status_out)
+        health = document.fetch("worker_sources").first
+        health && health.fetch("last_poll_result") == "failure"
       end
-      status_code, status_out, status_error = run_cli("status", @plan, "--output", output, "--json")
-      document = JSON.parse(status_out)
-      health = document.fetch("worker_sources").fetch(0)
 
       assert_equal 0, status_code, status_error
       assert_equal "required", health.fetch("policy")

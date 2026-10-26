@@ -144,6 +144,45 @@ class RunnerTest < Minitest::Test
     refute Dir.exist?(@output)
   end
 
+  # Runner independently rejects programmatic jobs with reserved context keys.
+  # Both keys must raise Error before execution preparation or process launch.
+  def test_runner_rejects_attempt_context_in_programmatic_job
+    plan = load_plan([fixture_job("spoof")])
+    executor = ->(*) { flunk "reserved job context must not launch" }
+    WorkloadOrchestrator::AttemptContext::ENV_KEYS.each do |name|
+      programmatic_job = plan.jobs.first.dup
+      programmatic_job.env = { name => "spoofed" }
+      plan.define_singleton_method(:jobs) { [programmatic_job] }
+      error = assert_raises(WorkloadOrchestrator::Error) do
+        build_runner(plan, command_executor: executor).run
+      end
+      assert_equal "job environment may not override reserved attempt context", error.message
+      refute Dir.exist?(@output)
+    end
+  end
+
+  # Worker overlays must fail before an attempt is recorded or a process starts.
+  # A separate test-owned output per reserved key preserves each refusal.
+  def test_runner_rejects_attempt_context_in_worker_environment
+    plan = load_plan([fixture_job("spoof")])
+    WorkloadOrchestrator::AttemptContext::ENV_KEYS.each do |name|
+      workers = WorkloadOrchestrator::WorkerSet.new("local" => {
+        "type" => "command", "labels" => ["local"], "hourly_rate_usd" => 0.0,
+        "job_env" => { name => "spoofed" }
+      })
+      output = File.join(@output, name)
+      runner = WorkloadOrchestrator::Runner.new(
+        plan: plan, workers: workers, workdir: @workdir, output_dir: output,
+        out: StringIO.new, foreground: false,
+        command_executor: ->(*) { flunk "reserved worker context must not launch" }
+      )
+      error = nil
+      capture_io { error = assert_raises(WorkloadOrchestrator::Error) { runner.run } }
+      assert_equal "worker environment may not override reserved attempt context", error.message
+      refute_path_exists File.join(output, "runs", "spoof", "metadata.json")
+    end
+  end
+
   def test_environment_can_explicitly_remove_inherited_value
     code = 'puts ENV.key?("WLO_TEST_SECRET") ? ENV.fetch("WLO_TEST_SECRET") : "unset"'
     plan = load_plan([job("job-1", code: code, env: { "WLO_TEST_SECRET" => nil })])
