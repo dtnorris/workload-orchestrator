@@ -372,6 +372,34 @@ class SourceOffersTest < Minitest::Test
     runner&.send(:stop_source_controls)
   end
 
+  # Atomic replacement can return an unlinked old inode from lstat. Retry only
+  # that case; retained hard links and repeated replacement still fail closed.
+  def test_atomic_execution_replacement_has_bounded_safe_read_retry
+    path = File.join(@output, "execution.json")
+    original_lstat = File.method(:lstat)
+    unlinked = File.join(@root, "old.json")
+    File.write(unlinked, "{}")
+    File.open(unlinked) do |handle|
+      File.unlink(unlinked)
+      retired = handle.stat
+      calls = 0
+      observer = lambda do |selected|
+        calls += 1
+        calls == 1 && selected == path ? retired : original_lstat.call(selected)
+      end
+      File.stub(:lstat, observer) do
+        assert_equal JSON.parse(File.read(path)), @offers.send(:read_json, path)
+      end
+      assert_equal 2, calls
+      File.stub(:lstat, retired) do
+        error = assert_raises(WorkloadOrchestrator::Error) { @offers.send(:read_json, path) }
+        assert_includes error.message, "repeatedly replaced"
+      end
+    end
+    File.link(path, File.join(@root, "hard-link"))
+    assert_raises(WorkloadOrchestrator::Error) { @offers.send(:read_json, path) }
+  end
+
   private
 
   # Construct a fresh process-equivalent reader with shared deterministic clocks.

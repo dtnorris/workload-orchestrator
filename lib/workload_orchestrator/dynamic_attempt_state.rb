@@ -33,6 +33,7 @@ module WorkloadOrchestrator
         }
         document.merge!(worker_binding.metadata) if worker_binding
         document["placement"] = placement if placement
+        document["dispatch_context"] = persist_attempt_context!(document)
         FileUtils.mkdir_p(run_dir(job))
         write_json(metadata_path(job), document)
         rebuild_jobs_unlocked

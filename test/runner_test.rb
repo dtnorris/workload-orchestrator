@@ -121,8 +121,27 @@ class RunnerTest < Minitest::Test
     end
 
     assert_equal "completed", build_runner(plan, command_executor: executor).run
-    assert_equal supplied, observed
+    context_keys = WorkloadOrchestrator::AttemptContext::ENV_KEYS
+    assert_equal supplied, observed.reject { |key, _value| context_keys.include?(key) }
+    context_path = observed.fetch("WLO_ATTEMPT_CONTEXT")
+    assert_equal Digest::SHA256.file(context_path).hexdigest, observed.fetch("WLO_ATTEMPT_CONTEXT_SHA256")
+    context = JSON.parse(File.read(context_path))
+    assert_equal "wlo-attempt-context/v0.1", context.fetch("contract_version")
+    assert_equal "static", context.dig("attempt", "job_id")
+    assert_equal 1, context.dig("attempt", "attempt")
+    assert_equal plan.sha256, context.dig("execution", "plan_sha256")
     assert_equal supplied, plan.jobs.first.env
+  end
+
+  # Job overlays cannot spoof either half of WLO's dispatch handoff.
+  def test_attempt_context_environment_is_reserved
+    WorkloadOrchestrator::AttemptContext::ENV_KEYS.each do |name|
+      error = assert_raises(WorkloadOrchestrator::Error) do
+        load_plan([job("spoof", code: "exit 0", env: { name => "spoofed" })])
+      end
+      assert_includes error.message, "reserved attempt context"
+    end
+    refute Dir.exist?(@output)
   end
 
   def test_environment_can_explicitly_remove_inherited_value

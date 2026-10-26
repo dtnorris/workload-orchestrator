@@ -83,13 +83,38 @@ Each subprocess receives its own environment map. WLO never changes global
 `ENV`, reselects a worker at launch, or asks a publisher to dispatch the command. A
 replacement generation cannot change the original attempt's endpoint; DW-14
 still owns in-doubt reconciliation and explicit retry. Static v0.1/v0.2
-environment merging remains unchanged.
+environment merging retains application values, with the reserved dispatch
+context variables below supplied by WLO in both static and dynamic execution.
 
 A workload adapter can translate `WLO_WORKER_ENDPOINT` into its own runtime
 convention while preserving a closed domain-specific environment. Endpoints
 from any publisher use the same path and differ only in this WLO-owned value.
 Commands/adapters must honor the convention; WLO cannot enforce routing inside
 an arbitrary command that deliberately overrides it after launch.
+
+## Immutable dispatch context
+
+Every newly dispatched attempt receives `WLO_ATTEMPT_CONTEXT` (an absolute file
+path) and `WLO_ATTEMPT_CONTEXT_SHA256` (the hash of its exact bytes). Job and
+static worker overlays cannot supply these reserved names. Inherited values
+are replaced. WLO persists the context before launching the command, records
+its reference in attempt metadata, and refuses changed bytes before launch.
+
+`wlo-attempt-context/v0.1` records the existing execution output realpath,
+creation time, plan ID/hash and workdir, plus the original job/pool/attempt,
+argv, worker and start time. Dynamic contexts also retain the already validated
+worker execution identity, registry binding and capability snapshot. Static
+contexts do not invent an observed registry or model identity. Files remain at
+`dispatch-context/JOB/attempt-N.json` when retry archives the original metadata;
+each later attempt has a separate file. Existing historical attempts acquire
+no retroactive dispatch provenance.
+
+This is a provider-neutral provenance handoff. WLO does not interpret scorer
+requests, validate domain results or grant evaluation/editorial acceptance.
+Worker loss, late terminal evidence, breaker counts, acknowledgments and retry
+authority retain their existing meanings. Consumers must bind their own output
+to this receipt, verify retained original bytes and obtain any required explicit
+review; neither this receipt nor a late process exit changes WLO success.
 
 ## Stop and resume rules
 

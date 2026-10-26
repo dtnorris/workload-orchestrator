@@ -53,6 +53,11 @@ module WorkloadOrchestrator
       end
 
       validate_workdir!
+      plan.jobs.each do |job|
+        if (job.env.keys & AttemptContext::ENV_KEYS).any?
+          raise Error, "job environment may not override reserved attempt context"
+        end
+      end
       workers.validate_plan!(plan) unless dynamic_workers?
       store.with_execution_lock do
         ensure_no_unresolved_interruption!
@@ -241,7 +246,7 @@ module WorkloadOrchestrator
 
                 recorded = store.record_dynamic_running!(
                   job: job, worker: assignment.worker,
-                  environment_keys: job.env.keys | [WORKER_ENDPOINT_ENV],
+                  environment_keys: job.env.keys | [WORKER_ENDPOINT_ENV] | AttemptContext::ENV_KEYS,
                   placement: {"contract_version" => PLACEMENT_INTERFACE_VERSION,
                               "endpoint_environment_variable" => WORKER_ENDPOINT_ENV}
                 )
@@ -269,7 +274,7 @@ module WorkloadOrchestrator
       # Consume the identity persisted before launch, never a fresh registry view.
       environment = job.env.merge(
         WORKER_ENDPOINT_ENV => attempt.worker_binding.execution_identity.fetch("endpoint")
-      )
+      ).merge(store.attempt_context_environment(job))
       stdout, stderr, status = @command_executor.call(environment, *job.argv, chdir: workdir, &spawned)
       record_dynamic_result(job, attempt, stdout, stderr, status)
     rescue CommandCancelled => e
@@ -418,7 +423,8 @@ module WorkloadOrchestrator
 
     def execute_job(job, worker)
       environment = merged_environment(worker, job)
-      started_at = store.record_running!(job: job, worker: worker, environment_keys: environment.keys)
+      started_at = store.record_running!(job: job, worker: worker, environment_keys: environment.keys | AttemptContext::ENV_KEYS)
+      environment = environment.merge(store.attempt_context_environment(job))
       @out.puts "[#{@job_positions.fetch(job.id)}/#{plan.jobs.length}] [#{worker.name}] #{job.id}"
       execute_command(job, environment, started_at)
     end
@@ -440,6 +446,9 @@ module WorkloadOrchestrator
     end
 
     def merged_environment(worker, job)
+      if (worker.job_env.keys & AttemptContext::ENV_KEYS).any?
+        raise Error, "worker environment may not override reserved attempt context"
+      end
       worker.job_env.merge(job.env)
     end
 

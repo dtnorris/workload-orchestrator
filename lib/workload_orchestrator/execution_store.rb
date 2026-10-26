@@ -4,6 +4,7 @@ require "fileutils"
 require "json"
 require "time"
 require_relative "dynamic_attempt_state"
+require_relative "attempt_context"
 require_relative "execution_retry"
 require_relative "execution_action_check"
 require_relative "consumer_demand"
@@ -13,6 +14,7 @@ require_relative "worker_loss_state_validation"
 
 module WorkloadOrchestrator
   class ExecutionStore
+    include AttemptContext
     include WorkerLossStateValidation
     include WorkerLossAcknowledgement
     include ExecutionRetry
@@ -498,6 +500,9 @@ module WorkloadOrchestrator
       return unless File.basename(path) == "metadata.json" && File.file?(path)
 
       prior = read_json(path, "job metadata")
+      if prior["attempt"] == value["attempt"] && prior.key?("dispatch_context") && prior["dispatch_context"] != value["dispatch_context"]
+        raise Error, "immutable dispatch context conflicts with recorded attempt"
+      end
       return unless prior.key?("worker_execution_identity")
       if prior["attempt"] != value["attempt"]
         archive = File.join(output_dir, "attempts", prior.fetch("job_id"),
