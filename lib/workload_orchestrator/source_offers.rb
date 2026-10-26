@@ -440,22 +440,31 @@ module WorkloadOrchestrator
 
     # Validate regular paths beneath the execution before reads/writes; links,
     # directories and hard-linked records are not control authority.
-    def regular!(path, missing: false)
+    def regular!(path, missing: false, retry_replacement: false)
       parent = File.dirname(path)
       raise Error, "unsafe source control directory" unless File.realpath(parent) == parent
       return if missing && !File.exist?(path) && !File.symlink?(path)
 
       stat = File.lstat(path)
+      return false if retry_replacement && stat.file? && stat.nlink.zero?
       raise Error, "unsafe source control path #{path}" unless stat.file? && stat.nlink == 1
+
+      true
     end
 
-    # Parse only validated regular JSON files; errors propagate to the caller.
+    # Parse only validated regular JSON files. A concurrent atomic execution
+    # update can unlink the inode during lstat; retry only that transient case,
+    # at most three times. Hard links and unsafe paths still raise immediately.
     def read_json(path)
-      regular!(path)
-      document = JSON.parse(File.binread(path))
-      raise Error, "source evidence must be an object" unless document.is_a?(Hash)
+      3.times do
+        next unless regular!(path, retry_replacement: true)
 
-      document
+        document = JSON.parse(File.binread(path))
+        raise Error, "source evidence must be an object" unless document.is_a?(Hash)
+
+        return document
+      end
+      raise Error, "source evidence repeatedly replaced during inspection"
     end
 
     # Keep a replaced/deleted synchronization file from creating a second lock

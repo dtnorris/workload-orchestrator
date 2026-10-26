@@ -95,8 +95,13 @@ class DynamicSchedulingRunnerTest < Minitest::Test
     assert_assignments_match_pools(plan, records)
     assert_equal parent_environment, ENV.to_h
     claims_seen.each do |job_id, identity|
-      assert_equal({ "WLO_WORKER_ENDPOINT" => identity.fetch("endpoint") }, environments_seen.fetch(job_id))
-      assert_includes metadata_for(job_id).fetch("environment_keys"), "WLO_WORKER_ENDPOINT"
+      metadata = metadata_for(job_id)
+      context = metadata.fetch("dispatch_context")
+      assert_equal({ "WLO_WORKER_ENDPOINT" => identity.fetch("endpoint"),
+                     "WLO_ATTEMPT_CONTEXT" => context.fetch("path"),
+                     "WLO_ATTEMPT_CONTEXT_SHA256" => context.fetch("sha256") }, environments_seen.fetch(job_id))
+      assert_equal Digest::SHA256.file(context.fetch("path")).hexdigest, context.fetch("sha256")
+      assert_equal environments_seen.fetch(job_id).keys.sort, metadata.fetch("environment_keys")
       assert_empty plan.jobs.find { |entry| entry.id == job_id }.env
     end
     assert_equal 6, environments_seen.values.map { |env| env.fetch("WLO_WORKER_ENDPOINT") }.uniq.length
@@ -141,7 +146,11 @@ class DynamicSchedulingRunnerTest < Minitest::Test
     assert_equal worker_a.fetch("generation_id"), identity.fetch("generation_id")
     assert_equal worker_a.fetch("capability_fingerprint"), identity.fetch("capability_fingerprint")
     assert_equal worker_a.fetch("endpoint"), identity.fetch("endpoint")
-    assert_equal supplied.merge("WLO_WORKER_ENDPOINT" => identity.fetch("endpoint")), environment
+    context = metadata.fetch("dispatch_context")
+    assert_equal supplied.merge("WLO_WORKER_ENDPOINT" => identity.fetch("endpoint"),
+                                "WLO_ATTEMPT_CONTEXT" => context.fetch("path"),
+                                "WLO_ATTEMPT_CONTEXT_SHA256" => context.fetch("sha256")), environment
+    assert_equal Digest::SHA256.file(context.fetch("path")).hexdigest, context.fetch("sha256")
     assert_equal environment.keys.sort, metadata.fetch("environment_keys")
     assert_equal supplied, plan.jobs.first.env
     assert_equal "#{worker_a.fetch('endpoint')}\n", File.read(File.join(@output, "runs/selected/stdout.log"))

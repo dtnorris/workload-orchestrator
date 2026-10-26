@@ -2,6 +2,7 @@
 
 require "digest"
 require "json"
+require_relative "attempt_context"
 
 module WorkloadOrchestrator
   class Plan
@@ -338,6 +339,7 @@ module WorkloadOrchestrator
       data = mapping!(value, label)
       data.each_with_object({}) do |(key, raw), output|
         name = key.to_s
+        raise Error, "#{label} may not override reserved attempt context" if AttemptContext::ENV_KEYS.include?(name)
         raise Error, "#{label} has invalid variable name #{name.inspect}" unless name.match?(ENV_NAME_PATTERN)
         raise Error, "#{label}.#{name} must be a string or null" unless raw.nil? || raw.is_a?(String)
 
